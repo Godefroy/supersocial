@@ -17,9 +17,14 @@ export const linkedinPaths = {
   myPostsIndex: () => join(base(), "posts", "mine", "index.json"),
 
   conversationsDir: () => join(base(), "conversations"),
-  conversationFile: (participantSlug: string) =>
-    join(base(), "conversations", `${participantSlug}.md`),
+  conversationFile: (slug: string) =>
+    join(base(), "conversations", `${slug}.md`),
   conversationsIndex: () => join(base(), "conversations", "index.json"),
+
+  outboxDir: () => join(base(), "outbox"),
+  outboxPendingDir: () => join(base(), "outbox", "pending"),
+  outboxSentDir: () => join(base(), "outbox", "sent"),
+  outboxFailedDir: () => join(base(), "outbox", "failed"),
 
   commentsDir: () => join(base(), "comments"),
   commentsFile: (postId: string) => join(base(), "comments", `${slugify(postId)}.md`),
@@ -138,9 +143,41 @@ export function writeComments(postId: string, comments: Comment[]): string {
   return path;
 }
 
+interface ConversationIndexEntry {
+  threadId: string;
+  slug: string;
+  file: string;
+  participants: string[];
+  lastSyncedAt: string;
+  lastMessageAt?: string;
+  messageCount: number;
+}
+
+function conversationSlug(conv: Conversation): string {
+  const names = conv.participants.map((p) => slugify(p.name)).filter(Boolean);
+  if (names.length === 0) return slugify(conv.id);
+  const joined = names.slice(0, 3).join("+");
+  const suffix = names.length > 3 ? `+${names.length - 3}-more` : "";
+  return (joined + suffix).slice(0, 120) || slugify(conv.id);
+}
+
+function resolveConversationPath(conv: Conversation): { path: string; slug: string } {
+  const indexPath = linkedinPaths.conversationsIndex();
+  const index = readJson<ConversationIndexEntry[]>(indexPath) ?? [];
+  const existingByThread = index.find((e) => e.threadId === conv.id);
+  if (existingByThread) return { path: existingByThread.file, slug: existingByThread.slug };
+
+  let slug = conversationSlug(conv);
+  const collision = index.find((e) => e.slug === slug);
+  if (collision) {
+    const shortId = slugify(conv.id).slice(0, 10) || "thread";
+    slug = `${slug}-${shortId}`;
+  }
+  return { path: linkedinPaths.conversationFile(slug), slug };
+}
+
 export function writeConversation(conv: Conversation, messages: Message[]): string {
-  const participantName = conv.participants[0]?.name ?? conv.id;
-  const path = linkedinPaths.conversationFile(slugify(participantName));
+  const { path, slug } = resolveConversationPath(conv);
 
   const existing = readMarkdown<Record<string, unknown>>(path);
   const seen = new Set<string>();
@@ -149,15 +186,16 @@ export function writeConversation(conv: Conversation, messages: Message[]): stri
     for (const tag of m) seen.add(tag.replace(/^<!-- msg-id:| -->$/g, ""));
   }
 
-  const newLines = messages
-    .filter((msg) => !seen.has(msg.id))
+  const newMessages = messages.filter((msg) => !seen.has(msg.id));
+  const newLines = newMessages
     .map(
       (msg) =>
-        `<!-- msg-id:${msg.id} -->\n## ${msg.sentAt} — ${msg.outgoing ? "Moi" : msg.from.name}\n\n${msg.body}\n`,
+        `<!-- msg-id:${msg.id} -->\n## ${msg.sentAt || "—"} — ${msg.outgoing ? "Moi" : msg.from.name}\n\n${msg.body}\n`,
     )
     .join("\n");
 
-  const body = (existing?.body ?? "") + (newLines ? "\n" + newLines : "");
+  const body = (existing?.body ?? "") + (newLines ? (existing?.body ? "\n" : "") + newLines : "");
+  const totalCount = (existing?.body.match(/<!-- msg-id:/g)?.length ?? 0) + newMessages.length;
 
   writeMarkdown(path, {
     frontmatter: {
@@ -166,13 +204,57 @@ export function writeConversation(conv: Conversation, messages: Message[]): stri
       conversation_id: conv.id,
       conversation_url: conv.url,
       participants: conv.participants.map((p) => p.name),
+      participant_urls: conv.participants.map((p) => p.profileUrl ?? null),
       last_synced_at: new Date().toISOString(),
       last_message_at: conv.lastMessageAt ?? null,
-      message_count: (existing?.body.match(/<!-- msg-id:/g)?.length ?? 0) +
-        messages.filter((m) => !seen.has(m.id)).length,
+      message_count: totalCount,
     },
     body,
   });
 
+  // Index
+  const indexPath = linkedinPaths.conversationsIndex();
+  const index = readJson<ConversationIndexEntry[]>(indexPath) ?? [];
+  const next: ConversationIndexEntry = {
+    threadId: conv.id,
+    slug,
+    file: path,
+    participants: conv.participants.map((p) => p.name),
+    lastSyncedAt: new Date().toISOString(),
+    ...(conv.lastMessageAt ? { lastMessageAt: conv.lastMessageAt } : {}),
+    messageCount: totalCount,
+  };
+  const filtered = index.filter((e) => e.threadId !== conv.id);
+  filtered.push(next);
+  filtered.sort((a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""));
+  writeJson(indexPath, filtered);
+
   return path;
+}
+
+export function findConversationFileByThreadId(threadId: string): string | null {
+  const index = readJson<ConversationIndexEntry[]>(linkedinPaths.conversationsIndex()) ?? [];
+  return index.find((e) => e.threadId === threadId)?.file ?? null;
+}
+
+/**
+ * Retourne le corps du dernier message sortant (envoyé par nous) dans ce thread,
+ * en relisant le fichier markdown. Utilisé pour détecter les envois en doublon.
+ */
+export function readLastOutgoingBody(threadId: string): string | null {
+  const file = findConversationFileByThreadId(threadId);
+  if (!file) return null;
+  const doc = readMarkdown<Record<string, unknown>>(file);
+  if (!doc) return null;
+  const blocks = doc.body.split(/<!-- msg-id:[^>]*-->/).filter((s) => s.trim().length > 0);
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i]!;
+    // Format: "\n## <sentAt> — <from>\n\n<body>\n"
+    const headerMatch = block.match(/^\s*##\s+[^\n]*—\s*(.+?)\s*\n\s*\n([\s\S]+?)\s*$/);
+    if (!headerMatch) continue;
+    const from = headerMatch[1]!.trim();
+    const body = headerMatch[2]!.trim();
+    if (from === "Moi") return body;
+  }
+  return null;
 }

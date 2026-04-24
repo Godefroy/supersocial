@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import * as readline from "node:readline";
 import { LinkedInProvider } from "../providers/linkedin/index.js";
 import {
   writeSearchResults,
@@ -6,9 +7,21 @@ import {
   writeComments,
   writeConversation,
   readMyPostsKnownIds,
+  readLastOutgoingBody,
 } from "../providers/linkedin/storage.js";
 import { extractPostIdFromUrl } from "../providers/linkedin/pages/comments.js";
+import {
+  addOutboxItem,
+  listOutboxItems,
+  findOutboxItemById,
+  markOutboxSent,
+  markOutboxFailed,
+  cancelOutboxItem,
+  type OutboxItem,
+  type OutboxStatus,
+} from "../providers/linkedin/outbox.js";
 import { getTodayCount, getDailyLimits, type CountedAction } from "../core/throttle-state.js";
+import { humanPause, RateLimitHitError } from "../core/throttle.js";
 import type { SearchOptions } from "../core/provider.js";
 
 async function withProvider<T>(fn: (p: LinkedInProvider) => Promise<T>): Promise<T> {
@@ -18,6 +31,26 @@ async function withProvider<T>(fn: (p: LinkedInProvider) => Promise<T>): Promise
   } finally {
     await provider.dispose();
   }
+}
+
+async function askYesNo(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `Confirmation requise mais stdin n'est pas un TTY. Ajoute --yes pour sauter la confirmation.`,
+    );
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await new Promise<string>((resolve) => rl.question(question, resolve));
+    return /^(y|yes|o|oui)$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
+function formatMessagePreview(body: string, maxLen = 120): string {
+  const oneLine = body.replace(/\s+/g, " ").trim();
+  return oneLine.length > maxLen ? oneLine.slice(0, maxLen - 1) + "…" : oneLine;
 }
 
 export function registerLinkedInCommands(program: Command): void {
@@ -81,46 +114,216 @@ export function registerLinkedInCommands(program: Command): void {
       const posts = await withProvider((p) => p.listMyPosts({ limit: opts.limit, knownIds }));
       const newPosts = posts.filter((p) => !knownIds.has(p.id));
       newPosts.forEach(writeMyPost);
-      posts.filter((p) => knownIds.has(p.id)).forEach(writeMyPost); // met à jour stats des existants aussi
+      posts.filter((p) => knownIds.has(p.id)).forEach(writeMyPost);
       console.log(
         `${newPosts.length} nouveau(x) post(s), ${posts.length - newPosts.length} post(s) déjà connus mis à jour. Total index: ${readMyPostsKnownIds().size}`,
       );
     });
 
   linkedin
-    .command("inbox:list")
-    .description("Lister les conversations privées (aperçu)")
-    .option("-n, --limit <n>", "nombre max de conversations", (v) => parseInt(v, 10), 30)
-    .action(async (opts: { limit: number }) => {
-      const convs = await withProvider((p) => p.listConversations({ limit: opts.limit }));
-      for (const c of convs) {
+    .command("thread <url>")
+    .description("Synchroniser une conversation. url = URL profil (/in/slug/), URL thread (/messaging/thread/id/) ou thread ID")
+    .action(async (url: string) => {
+      const { conversation, messages } = await withProvider((p) => p.readConversation(url));
+      const file = writeConversation(conversation, messages);
+      console.log(
+        `Thread ${conversation.id} avec ${conversation.participants.map((p) => p.name).join(", ") || "?"}: ${messages.length} message(s). Stocké dans ${file}`,
+      );
+    });
+
+  linkedin
+    .command("dm <url> <body>")
+    .description("Envoyer un DM. Essaie de charger l'historique (URL profil ou URL thread). Si thread existant: dédup + confirmation. Si nouveau: envoi via compose.")
+    .option("-y, --yes", "sauter la confirmation interactive")
+    .option("--dry-run", "ne pas envoyer, juste afficher ce qui serait envoyé")
+    .option("--force", "autoriser l'envoi même si le dernier message sortant est identique")
+    .option("--queue", "ajouter à la boîte d'envoi au lieu d'envoyer maintenant")
+    .action(async (url: string, body: string, opts: { yes?: boolean; dryRun?: boolean; force?: boolean; queue?: boolean }) => {
+      if (opts.queue) {
+        const item = addOutboxItem({ recipient: url, body });
+        console.log(`Ajouté à la boîte d'envoi: ${item.id} (${item.recipientLabel}). Lance \`linkedin outbox:send\` pour traiter.`);
+        return;
+      }
+
+      // Un seul provider pour read + send: évite deux lancements de Chrome et
+      // deux résolutions de thread (cache interne côté provider).
+      await withProvider(async (p) => {
+        let conversation: Awaited<ReturnType<LinkedInProvider["readConversation"]>>["conversation"] | null = null;
+        let messages: Awaited<ReturnType<LinkedInProvider["readConversation"]>>["messages"] = [];
+        try {
+          const snap = await p.readConversation(url);
+          conversation = snap.conversation;
+          messages = snap.messages;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`\n[pas d'historique chargé: ${msg}]`);
+        }
+
+        if (conversation) {
+          console.error(`\nThread ${conversation.id}`);
+          console.error(`Participants: ${conversation.participants.map((p) => p.name).join(", ") || "?"}`);
+          console.error(`${messages.length} message(s) dans l'historique.`);
+          const last = messages.slice(-3);
+          if (last.length > 0) {
+            console.error(`\nDerniers messages:`);
+            for (const m of last) {
+              const who = m.outgoing ? "Moi" : m.from.name;
+              console.error(`  [${m.sentAt || "?"}] ${who}: ${formatMessagePreview(m.body, 80)}`);
+            }
+          }
+
+          const lastOutgoing =
+            [...messages].reverse().find((m) => m.outgoing)?.body ??
+            readLastOutgoingBody(conversation.id);
+          if (!opts.force && lastOutgoing && lastOutgoing.trim() === body.trim()) {
+            throw new Error(
+              `Doublon détecté: le dernier message sortant a déjà le même body. Ajoute --force pour renvoyer quand même.`,
+            );
+          }
+        } else {
+          console.error(`\nCible: ${url} (nouveau thread, pas d'historique)`);
+        }
+
+        console.error(`\nMessage à envoyer:\n---\n${body}\n---`);
+
+        if (opts.dryRun) {
+          console.error(`\n[dry-run] Pas d'envoi.${conversation ? " Thread sauvegardé dans data/linkedin/conversations/." : ""}`);
+          if (conversation) writeConversation(conversation, messages);
+          return;
+        }
+
+        if (!opts.yes) {
+          const ok = await askYesNo("Envoyer ce message ? [y/N] ");
+          if (!ok) {
+            console.error("Annulé.");
+            if (conversation) writeConversation(conversation, messages);
+            return;
+          }
+        }
+
+        const sent = await p.sendMessage(url, body);
+        const file = writeConversation(sent.conversation, sent.messages);
+        const newMsg = sent.messages.at(-1);
+        console.log(`Envoyé. Thread sauvegardé: ${file} (${sent.messages.length} messages, dernier id: ${newMsg?.id ?? "?"})`);
+      });
+    });
+
+  linkedin
+    .command("outbox:add <url> <body>")
+    .description("Ajouter un message à la boîte d'envoi (traité ensuite par outbox:send)")
+    .option("--label <label>", "libellé lisible pour cet item")
+    .action((url: string, body: string, opts: { label?: string }) => {
+      const itemParams: { recipient: string; body: string; label?: string } = { recipient: url, body };
+      if (opts.label) itemParams.label = opts.label;
+      const item = addOutboxItem(itemParams);
+      console.log(`Ajouté: ${item.id} | ${item.recipientLabel} | ${formatMessagePreview(body, 60)}`);
+      console.log(`Fichier: ${item.file}`);
+    });
+
+  linkedin
+    .command("outbox:list")
+    .description("Lister les items de la boîte d'envoi")
+    .option("--status <s>", "pending | sent | failed | all", "pending")
+    .action((opts: { status: string }) => {
+      const statuses: OutboxStatus[] =
+        opts.status === "all"
+          ? ["pending", "sent", "failed"]
+          : ([opts.status] as OutboxStatus[]);
+      const items = listOutboxItems(statuses);
+      if (items.length === 0) {
+        console.log("Aucun item.");
+        return;
+      }
+      console.log(`ID        Status   Destinataire                          Message`);
+      console.log(`--------  -------  ------------------------------------  -------`);
+      for (const it of items) {
         console.log(
-          `- ${c.participants.map((p) => p.name).join(", ")} | ${c.lastMessageAt ?? "?"} | unread=${c.unread}`,
+          `${it.id.padEnd(8)}  ${it.status.padEnd(7)}  ${it.recipientLabel.slice(0, 36).padEnd(36)}  ${formatMessagePreview(it.body, 60)}`,
         );
       }
     });
 
   linkedin
-    .command("inbox:read <conversationId>")
-    .description("Lire une conversation et la sauvegarder en markdown")
-    .action(async (conversationId: string) => {
-      const { messages, conversation } = await withProvider(async (p) => {
-        const messages = await p.readConversation(conversationId);
-        const convs = await p.listConversations({ limit: 50 });
-        const conversation = convs.find((c) => c.id === conversationId);
-        if (!conversation) throw new Error(`Conversation introuvable: ${conversationId}`);
-        return { messages, conversation };
-      });
-      const file = writeConversation(conversation, messages);
-      console.log(`${messages.length} message(s) synchronisé(s). Stocké dans ${file}`);
+    .command("outbox:cancel <id>")
+    .description("Annuler (supprimer) un item en attente")
+    .action((id: string) => {
+      const item = cancelOutboxItem(id);
+      if (!item) {
+        console.error(`Item introuvable: ${id}`);
+        process.exit(1);
+      }
+      console.log(`Annulé: ${item.id} (${item.recipientLabel})`);
     });
 
   linkedin
-    .command("dm <conversationId> <body>")
-    .description("Envoyer un DM dans une conversation existante")
-    .action(async (conversationId: string, body: string) => {
-      const msg = await withProvider((p) => p.sendMessage(conversationId, body));
-      console.log(`Message envoyé: ${msg.id}`);
+    .command("outbox:send")
+    .description("Traiter les items en attente (respecte la limite journalière dm et fait des pauses humaines entre les envois)")
+    .option("-n, --count <n>", "nombre max d'items à envoyer cette session", (v) => parseInt(v, 10))
+    .option("-y, --yes", "ne pas demander confirmation par message")
+    .option("--dry-run", "ne pas envoyer, juste afficher le plan")
+    .action(async (opts: { count?: number; yes?: boolean; dryRun?: boolean }) => {
+      const pending = listOutboxItems(["pending"]);
+      if (pending.length === 0) {
+        console.log("Aucun item en attente.");
+        return;
+      }
+      const limits = getDailyLimits();
+      const todayCount = getTodayCount("dm");
+      const remainingToday = Math.max(0, limits.dm - todayCount);
+      const targetCount = Math.min(opts.count ?? Infinity, remainingToday, pending.length);
+
+      console.log(`Pending: ${pending.length} | DM aujourd'hui: ${todayCount}/${limits.dm} | Capacité restante: ${remainingToday} | Cette session: ${targetCount}`);
+      if (targetCount === 0) {
+        console.log("Rien à traiter (limite atteinte ou count=0).");
+        return;
+      }
+
+      if (opts.dryRun) {
+        console.log("\n[dry-run] Items qui seraient envoyés:");
+        for (const it of pending.slice(0, targetCount)) {
+          console.log(`  ${it.id} | ${it.recipientLabel} | ${formatMessagePreview(it.body, 60)}`);
+        }
+        return;
+      }
+
+      if (!opts.yes) {
+        const ok = await askYesNo(`Envoyer ${targetCount} message(s) ? [y/N] `);
+        if (!ok) {
+          console.error("Annulé.");
+          return;
+        }
+      }
+
+      let sent = 0;
+      let failed = 0;
+      // Un seul browser pour toute la boucle: évite N lancements de Chrome.
+      await withProvider(async (p) => {
+        for (const item of pending.slice(0, targetCount)) {
+          console.log(`\n[${sent + failed + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
+          console.log(`  ${formatMessagePreview(item.body, 100)}`);
+          try {
+            const snap = await p.sendMessage(item.recipient, item.body);
+            writeConversation(snap.conversation, snap.messages);
+            markOutboxSent(item, snap.conversation.id);
+            console.log(`  ✓ envoyé (thread ${snap.conversation.id})`);
+            sent++;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            markOutboxFailed(item, msg);
+            console.error(`  ✗ échec: ${msg}`);
+            failed++;
+            if (err instanceof RateLimitHitError) {
+              console.error(`RateLimitHitError détecté. Arrêt immédiat de la boîte d'envoi.`);
+              break;
+            }
+          }
+          if (sent + failed < targetCount) {
+            await humanPause("dm");
+          }
+        }
+      });
+
+      console.log(`\nBilan: ${sent} envoyé(s), ${failed} échec(s), ${pending.length - sent - failed} restant(s) en attente.`);
     });
 
   linkedin

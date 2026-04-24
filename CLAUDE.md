@@ -27,3 +27,5 @@ Les skills (`.claude/skills/*/SKILL.md`) doivent rester centrées sur leur fonct
 ## Documentation
 
 Le `README.md` reste synthétique et décrit l'installation, l'usage via la skill, et les points d'attention. Toute nouvelle commande CLI, règle d'usage, ou point d'attention qui apparaît au fil du travail doit être reflété dans le `README.md` et la skill correspondante. Le README ne paraphrase pas la skill, il y renvoie.
+
+Le `TODO.md` liste ce qui reste à développer et ce qui est fait. Le maintenir à jour: cocher les items quand une feature est livrée, ajouter les nouvelles idées et améliorations qui émergent, retirer ce qui n'est plus pertinent.

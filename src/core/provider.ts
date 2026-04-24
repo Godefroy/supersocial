@@ -74,14 +74,21 @@ export interface PublishOptions {
   visibility?: "public" | "connections";
 }
 
+export interface ThreadSnapshot {
+  conversation: Conversation;
+  messages: Message[];
+}
+
 export interface SocialProvider {
   readonly id: ProviderId;
 
   searchPosts(query: string, opts?: SearchOptions): Promise<Post[]>;
   listMyPosts(opts?: { limit?: number }): Promise<Post[]>;
   listConversations(opts?: { limit?: number }): Promise<Conversation[]>;
-  readConversation(conversationId: string): Promise<Message[]>;
-  sendMessage(conversationId: string, body: string): Promise<Message>;
+  /** Accepte une URL profil, URL thread ou thread ID. Retourne le snapshot complet. */
+  readConversation(input: string): Promise<ThreadSnapshot>;
+  /** Envoie et retourne le snapshot mis à jour (le message envoyé est dans messages). */
+  sendMessage(input: string, body: string): Promise<ThreadSnapshot>;
   listComments(postId: string): Promise<Comment[]>;
   sendComment(postId: string, body: string): Promise<Comment>;
   publishPost(opts: PublishOptions): Promise<Post>;

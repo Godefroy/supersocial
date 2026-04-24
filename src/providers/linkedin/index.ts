@@ -7,6 +7,7 @@ import type {
   Comment,
   Conversation,
   Message,
+  ThreadSnapshot,
 } from "../../core/provider.js";
 import type { ProviderId } from "../../core/storage.js";
 import { launchPersistentChrome, closeContext } from "../../core/browser.js";
@@ -22,11 +23,26 @@ import { searchPostsOnPage } from "./pages/search.js";
 import { listMyPostsOnPage } from "./pages/my-posts.js";
 import { listCommentsOnPage } from "./pages/comments.js";
 import { runLinkedInLogin } from "./pages/login.js";
+import {
+  resolveThreadFromInput,
+  resolveTarget,
+  openAndLoadThread,
+  extractThreadState,
+  sendMessageInOpenThread,
+  sendFromComposeUrl,
+} from "./pages/messaging.js";
 
 export class LinkedInProvider implements SocialProvider {
   readonly id: ProviderId = "linkedin";
   private context: BrowserContext | null = null;
   private killSwitch: KillSwitchState | null = null;
+  /** Cache input → cible résolue, pour éviter de relancer la résolution entre read/send au sein d'une même session. */
+  private targetCache = new Map<
+    string,
+    Awaited<ReturnType<typeof resolveTarget>>
+  >();
+  /** URL thread actuellement chargée, pour skip `openAndLoadThread` si déjà sur place. */
+  private loadedThreadUrl: string | null = null;
 
   async ensureContext(): Promise<BrowserContext> {
     if (!this.context) this.context = await launchPersistentChrome();
@@ -74,11 +90,97 @@ export class LinkedInProvider implements SocialProvider {
   async listConversations(_opts?: { limit?: number }): Promise<Conversation[]> {
     throw new Error("listConversations: pas encore implémenté");
   }
-  async readConversation(_conversationId: string): Promise<Message[]> {
-    throw new Error("readConversation: pas encore implémenté");
+
+  private async getOrResolveTarget(
+    page: Page,
+    input: string,
+  ): Promise<Awaited<ReturnType<typeof resolveTarget>>> {
+    const cached = this.targetCache.get(input);
+    if (cached) return cached;
+    const target = await resolveTarget(page, input);
+    this.targetCache.set(input, target);
+    return target;
   }
-  async sendMessage(_conversationId: string, _body: string): Promise<Message> {
-    throw new Error("sendMessage: pas encore implémenté");
+
+  private async ensureThreadLoaded(page: Page, threadUrl: string): Promise<void> {
+    if (this.loadedThreadUrl === threadUrl) return;
+    await openAndLoadThread(page, threadUrl);
+    this.loadedThreadUrl = threadUrl;
+  }
+
+  async resolveThread(input: string): Promise<{ threadId: string; threadUrl: string }> {
+    checkAndRecord("read");
+    const page = await this.ensurePage();
+    const target = await this.getOrResolveTarget(page, input);
+    if (!target.threadId || !target.threadUrl) {
+      throw new Error(
+        `Pas de thread résolu depuis "${input}". Donne l'URL du thread pour lire l'historique.`,
+      );
+    }
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    return { threadId: target.threadId, threadUrl: target.threadUrl };
+  }
+
+  async readConversation(input: string): Promise<ThreadSnapshot> {
+    checkAndRecord("read");
+    const page = await this.ensurePage();
+    const target = await this.getOrResolveTarget(page, input);
+    if (!target.threadId || !target.threadUrl) {
+      throw new Error(
+        `Pas de thread résolu depuis "${input}". Donne l'URL du thread pour lire l'historique. Une URL profil n'est acceptée que pour \`dm\` quand un thread existe déjà.`,
+      );
+    }
+    await this.ensureThreadLoaded(page, target.threadUrl);
+    const state = await extractThreadState(page, target.threadId, target.threadUrl);
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    const conversation: Conversation = {
+      id: state.threadId,
+      url: state.threadUrl,
+      participants: state.participants,
+      unread: false,
+      ...(state.messages.at(-1)?.sentAt ? { lastMessageAt: state.messages.at(-1)!.sentAt } : {}),
+    };
+    return { conversation, messages: state.messages };
+  }
+
+  async sendMessage(input: string, body: string): Promise<ThreadSnapshot> {
+    checkAndRecord("dm");
+    const page = await this.ensurePage();
+    const target = await this.getOrResolveTarget(page, input);
+
+    let threadId: string;
+    let threadUrl: string;
+
+    if (target.threadId && target.threadUrl) {
+      threadId = target.threadId;
+      threadUrl = target.threadUrl;
+      await this.ensureThreadLoaded(page, threadUrl);
+      await sendMessageInOpenThread(page, body);
+    } else if (target.composeUrl) {
+      const res = await sendFromComposeUrl(page, target.composeUrl, body);
+      threadId = res.threadId;
+      threadUrl = res.threadUrl;
+      // Le compose a redirigé vers /messaging/thread/<id>/; on met à jour le cache
+      // et on considère le thread "chargé" puisque le DOM contient déjà le message
+      // envoyé (thread neuf = pas d'historique à dérouler).
+      this.targetCache.set(input, { threadId, threadUrl });
+      this.loadedThreadUrl = threadUrl;
+    } else {
+      throw new Error(`Cible non résolue: ni thread existant ni compose URL disponible pour "${input}".`);
+    }
+
+    const state = await extractThreadState(page, threadId, threadUrl);
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    const conversation: Conversation = {
+      id: state.threadId,
+      url: state.threadUrl,
+      participants: state.participants,
+      unread: false,
+      ...(state.messages.at(-1)?.sentAt ? { lastMessageAt: state.messages.at(-1)!.sentAt } : {}),
+    };
+    return { conversation, messages: state.messages };
   }
   async listComments(postIdOrUrl: string): Promise<Comment[]> {
     checkAndRecord("read");
