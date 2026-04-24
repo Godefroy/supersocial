@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+.chrome-profile/
+data/
+*.log
+.DS_Store

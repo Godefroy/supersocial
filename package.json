@@ -1,0 +1,34 @@
+{
+  "name": "supersocial",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Automation CLI pour LinkedIn (et plus tard X) via Playwright, stockage markdown local",
+  "type": "module",
+  "bin": {
+    "supersocial": "./bin/supersocial.mjs"
+  },
+  "scripts": {
+    "dev": "tsx src/cli/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli/index.js",
+    "typecheck": "tsc --noEmit",
+    "playwright:install": "playwright install chrome"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "dotenv": "^17.4.2",
+    "gray-matter": "^4.0.3",
+    "playwright": "^1.49.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
