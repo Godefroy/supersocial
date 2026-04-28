@@ -13,7 +13,10 @@ Commandes fonctionnelles :
 - `linkedin throttle:status` : compteurs journaliers par action
 - `linkedin thread <url>` : synchro d'une conversation (URL profil, URL thread ou thread ID)
 - `linkedin dm <url> <body>` : envoi DM avec synchro + confirmation + dédup
-- `linkedin outbox:add|list|send|cancel` : boîte d'envoi pour batch throttlé
+- `linkedin outbox:add|list|send|retry|cancel` : boîte d'envoi pour batch throttlé (retry rejoue les items `failed`)
+- `linkedin conversations:rename` : recompose les noms de fichier des conversations dont le slug est resté en thread ID brut
+- `scripts/cron.sh <args>` : wrapper cron générique (verrou global PID-based, log par job dans `data/.state/cron/<job>.log`)
+- `scripts/crontab.{txt,sh}` : template versionné + script `install/uninstall/status/preview` qui merge le bloc supersocial dans le crontab utilisateur via marqueurs
 
 Infra :
 - Throttling persistant par action LinkedIn (`BASE_PROFILES`) dans `data/.state/`
@@ -22,7 +25,7 @@ Infra :
 - Décodage des dates depuis URN snowflake + fallback label relatif
 - Dédup des messages par `data-event-urn`, refus du doublon au `dm` (sauf `--force`)
 - Stockage conversations dans `data/linkedin/conversations/<slug>.md` avec index JSON par thread_id
-- Outbox : pending/sent/failed sous `data/linkedin/outbox/`, un markdown par item
+- Outbox : pending/sent/failed sous `data/linkedin/outbox/`, un markdown par item. `outbox:send` dédup avant chaque envoi (compare le dernier sortant du thread au body), un match passe l'item en `sent` avec note sans consommer de quota dm
 - Résolution URL profil → thread ID via dérivation base64 depuis les `data-event-urn` (décoder, prendre la partie après `&`, réencoder avec préfixe `2-`). Évite la recherche inbox, gère homonymes et threads anciens
 - Détection outgoing par comparaison URN sender (data-event-urn) ∉ participants "autres" (où self est filtré par nom depuis l'alt de `.global-nav__me-photo`)
 
@@ -57,7 +60,7 @@ Infra :
 - [ ] Tracker les limites hebdomadaires en plus du journalier (ex : 100-200 invitations/semaine)
 - [ ] Commande `linkedin health` : vérifier session valide, test rapide d'extraction, rapport
 - [ ] Outbox : support d'un délai programmé (envoyer pas avant telle heure, fenêtres ouvrables uniquement via `waitForWorkingWindow`)
-- [ ] Outbox : reprendre automatiquement les items `failed` après correction manuelle
+- [x] Outbox : reprendre les items `failed` après correction (`outbox:retry [ids...] | --all` avec `--match <motif>`)
 - [ ] Tests (aucun actuellement)
 - [ ] CI GitHub Actions pour typecheck (si le repo passe en public un jour)
 

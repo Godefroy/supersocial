@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { renameSync, existsSync } from "node:fs";
 import { providerDir, slugify, writeMarkdown, readMarkdown, writeJson, readJson } from "../../core/storage.js";
 import type { Post, Comment, Message, Conversation } from "../../core/provider.js";
 
@@ -153,12 +154,17 @@ interface ConversationIndexEntry {
   messageCount: number;
 }
 
+function slugFromNames(names: string[]): string | null {
+  const slugs = names.map(slugify).filter(Boolean);
+  if (slugs.length === 0) return null;
+  const joined = slugs.slice(0, 3).join("+");
+  const suffix = slugs.length > 3 ? `+${slugs.length - 3}-more` : "";
+  const result = (joined + suffix).slice(0, 120);
+  return result || null;
+}
+
 function conversationSlug(conv: Conversation): string {
-  const names = conv.participants.map((p) => slugify(p.name)).filter(Boolean);
-  if (names.length === 0) return slugify(conv.id);
-  const joined = names.slice(0, 3).join("+");
-  const suffix = names.length > 3 ? `+${names.length - 3}-more` : "";
-  return (joined + suffix).slice(0, 120) || slugify(conv.id);
+  return slugFromNames(conv.participants.map((p) => p.name)) ?? slugify(conv.id);
 }
 
 function resolveConversationPath(conv: Conversation): { path: string; slug: string } {
@@ -257,4 +263,96 @@ export function readLastOutgoingBody(threadId: string): string | null {
     if (from === "Moi") return body;
   }
   return null;
+}
+
+/**
+ * Met a jour les participants en frontmatter d'un fichier de conversation existant.
+ * Utilise pour reparer les conversations creees via compose qui ont `participants: []`
+ * en s'appuyant sur des donnees externes (ex: outbox sent items). No-op si le fichier
+ * a deja des participants ou si introuvable.
+ */
+export function enrichConversationParticipants(
+  threadId: string,
+  participants: Array<{ name: string; profileUrl?: string | null }>,
+): boolean {
+  const file = findConversationFileByThreadId(threadId);
+  if (!file) return false;
+  const doc = readMarkdown<Record<string, unknown>>(file);
+  if (!doc) return false;
+  const existing = doc.frontmatter?.participants;
+  if (Array.isArray(existing) && existing.length > 0) return false;
+  if (participants.length === 0) return false;
+
+  const updated = {
+    ...doc.frontmatter,
+    participants: participants.map((p) => p.name),
+    participant_urls: participants.map((p) => p.profileUrl ?? null),
+  };
+  writeMarkdown(file, { frontmatter: updated, body: doc.body });
+  return true;
+}
+
+export interface ConversationRename {
+  threadId: string;
+  oldSlug: string;
+  newSlug: string;
+  oldFile: string;
+  newFile: string;
+}
+
+/**
+ * Renomme les fichiers de conversation dont le slug retombait sur l'ID du thread
+ * (cas ou les participants etaient inconnus au moment du write, ex: thread tout
+ * neuf via compose). Recalcule le slug a partir des participants en frontmatter
+ * et deplace le fichier + met a jour l'index.
+ */
+export function renameConversationFiles(): { renamed: ConversationRename[]; skipped: Array<{ threadId: string; reason: string }> } {
+  const indexPath = linkedinPaths.conversationsIndex();
+  const index = readJson<ConversationIndexEntry[]>(indexPath) ?? [];
+  const renamed: ConversationRename[] = [];
+  const skipped: Array<{ threadId: string; reason: string }> = [];
+
+  for (const entry of index) {
+    const fallbackSlug = slugify(entry.threadId);
+    if (entry.slug !== fallbackSlug) continue; // slug non degenere, on laisse
+
+    const doc = readMarkdown<Record<string, unknown>>(entry.file);
+    const fmParticipants = (doc?.frontmatter?.participants ?? []) as unknown;
+    const names = Array.isArray(fmParticipants)
+      ? fmParticipants.filter((n): n is string => typeof n === "string" && n.length > 0)
+      : [];
+    if (names.length === 0) {
+      skipped.push({ threadId: entry.threadId, reason: "participants vides, faire `linkedin thread <url>` d'abord" });
+      continue;
+    }
+
+    let newSlug = slugFromNames(names);
+    if (!newSlug) {
+      skipped.push({ threadId: entry.threadId, reason: "impossible de deriver un slug depuis les noms" });
+      continue;
+    }
+
+    // Collision avec un autre thread (slug deja pris): on suffixe avec un short ID.
+    const collision = index.find((e) => e.threadId !== entry.threadId && e.slug === newSlug);
+    if (collision) {
+      const shortId = slugify(entry.threadId).slice(0, 10) || "thread";
+      newSlug = `${newSlug}-${shortId}`;
+    }
+
+    const newFile = linkedinPaths.conversationFile(newSlug);
+    if (existsSync(newFile)) {
+      skipped.push({ threadId: entry.threadId, reason: `fichier cible existe deja: ${newFile}` });
+      continue;
+    }
+
+    renameSync(entry.file, newFile);
+    renamed.push({ threadId: entry.threadId, oldSlug: entry.slug, newSlug, oldFile: entry.file, newFile });
+    entry.slug = newSlug;
+    entry.file = newFile;
+  }
+
+  if (renamed.length > 0) {
+    writeJson(indexPath, index);
+  }
+  return { renamed, skipped };
 }

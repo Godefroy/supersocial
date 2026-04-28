@@ -18,11 +18,13 @@ npm run dev -- linkedin posts:sync:latest [-n 200]
 # Conversations privées
 npm run dev -- linkedin thread <url>
 npm run dev -- linkedin dm <url> <body> [--yes] [--dry-run] [--force] [--queue]
+npm run dev -- linkedin conversations:rename
 
 # Boîte d'envoi (préparer des messages, envoyer en batch sous throttling)
 npm run dev -- linkedin outbox:add <url> <body> [--label <label>]
 npm run dev -- linkedin outbox:list [--status pending|sent|failed|all]
-npm run dev -- linkedin outbox:send [-n N] [--yes] [--dry-run]
+npm run dev -- linkedin outbox:send [-n N] [--dry-run]
+npm run dev -- linkedin outbox:retry [ids...] [--all] [--match <motif>]
 npm run dev -- linkedin outbox:cancel <id>
 
 # Commentaires
@@ -44,11 +46,15 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 
 `dm <url> <body>` essaie de charger l'historique d'abord. Si thread existant : affiche les 3 derniers messages, refuse le doublon (sauf `--force`), demande confirmation (sauf `--yes`), envoie, re-synchronise. Si thread neuf : envoi direct via compose, pas de dédup possible.
 
+`conversations:rename` rebaptise les fichiers de conversation dont le slug est resté sur le thread ID brut (cas d'un thread créé via compose dont les participants n'étaient pas extractibles au moment de l'envoi). Idempotent.
+
 `--dry-run` affiche ce qui serait envoyé sans envoyer. `--queue` ajoute à la boîte d'envoi.
 
 ## Boîte d'envoi
 
-`outbox:add` pose un markdown dans `data/linkedin/outbox/pending/`. `outbox:send` traite les items en attente, un par un, avec `humanPause("dm")` entre chaque, et s'arrête sur `RateLimitHitError`. Nombre d'envois plafonné par la capacité journalière restante (`getDailyLimits().dm - getTodayCount("dm")`). Les items envoyés passent dans `sent/`, ceux en erreur dans `failed/`.
+`outbox:add` pose un markdown dans `data/linkedin/outbox/pending/`. `outbox:send` traite les items en attente, un par un, avec `humanPause("dm")` entre chaque, et s'arrête sur `RateLimitHitError`. Nombre d'envois plafonné par la capacité journalière restante (`getDailyLimits().dm - getTodayCount("dm")`). Les items envoyés passent dans `sent/`, ceux en erreur dans `failed/`. Pour rejouer des items en échec : `outbox:retry --all` (tout) ou `outbox:retry <id1> <id2>` (sélection), avec `--match <motif>` pour filtrer par regex sur le message d'erreur.
+
+Avant chaque envoi, `outbox:send` vérifie le thread cible et compare le dernier message sortant au body de l'item. Si match exact, l'item passe direct en `sent/` avec `note: déjà envoyé (dedup match)` sans consommer de quota dm. Sécurise les retries après un faux négatif (ex: compose-no-redirect où le message a été envoyé mais l'exception a été levée).
 
 ## Gestion d'erreur
 

@@ -14,6 +14,7 @@ export interface OutboxItem {
   sentAt?: string;
   threadId?: string;
   error?: string;
+  note?: string;
   status: OutboxStatus;
   file: string;
 }
@@ -29,6 +30,7 @@ interface OutboxFrontmatter extends Record<string, unknown> {
   sent_at?: string | null;
   thread_id?: string | null;
   error?: string | null;
+  note?: string | null;
 }
 
 function ensureDirs(): void {
@@ -117,6 +119,7 @@ function parseItem(file: string, status: OutboxStatus): OutboxItem | null {
   if (fm.sent_at) item.sentAt = String(fm.sent_at);
   if (fm.thread_id) item.threadId = String(fm.thread_id);
   if (fm.error) item.error = String(fm.error);
+  if (fm.note) item.note = String(fm.note);
   return item;
 }
 
@@ -169,11 +172,12 @@ function moveItem(item: OutboxItem, next: OutboxStatus, updates: Partial<OutboxF
   return targetFile;
 }
 
-export function markOutboxSent(item: OutboxItem, threadId: string): string {
+export function markOutboxSent(item: OutboxItem, threadId: string, note?: string): string {
   return moveItem(item, "sent", {
     sent_at: new Date().toISOString(),
     thread_id: threadId,
     error: null,
+    ...(note ? { note } : {}),
   });
 }
 
@@ -182,6 +186,13 @@ export function markOutboxFailed(item: OutboxItem, error: string): string {
     error,
     sent_at: null,
   });
+}
+
+export function retryOutboxItem(item: OutboxItem): string {
+  if (item.status !== "failed") {
+    throw new Error(`L'item ${item.id} n'est pas en échec (status: ${item.status}).`);
+  }
+  return moveItem(item, "pending", { error: null, sent_at: null });
 }
 
 export function cancelOutboxItem(id: string): OutboxItem | null {

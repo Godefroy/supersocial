@@ -1,0 +1,13 @@
+# Template crontab supersocial. Les placeholders sont substitues par le chemin
+# absolu du repo lors de l'install (scripts/crontab.sh install). Toutes les heures
+# sont en heure locale (le cron systeme respecte la TZ courante).
+
+# Synchro des derniers posts tous les jours a 8h (avant les creneaux d'envoi).
+0 8 * * * __REPO__/scripts/cron.sh linkedin posts:sync:latest
+
+# Outbox: 3 creneaux dans les fenetres humaines lu-ve 9h-12h / 14h-18h.
+# Le 1er run absorbe le plafond journalier (40 DM), les suivants rattrapent en cas
+# d'echec ou sont no-op si tout est parti. Verrou global = au plus un cron a la fois.
+0 10  * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:send
+30 14 * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:send
+0 17  * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:send

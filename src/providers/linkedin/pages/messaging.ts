@@ -44,6 +44,8 @@ export interface ResolvedTarget {
   threadUrl: string | null;
   /** URN profil du destinataire, présent quand l'input était une URL profil. */
   recipientProfileUrn?: string;
+  /** URL profil canonique du destinataire (`https://www.linkedin.com/in/<slug>/`). */
+  recipientProfileUrl?: string;
   /** Nom d'affichage extrait de la page profil. */
   recipientDisplayName?: string;
   /** URL compose à utiliser pour un envoi neuf si threadId == null. */
@@ -96,6 +98,7 @@ export async function resolveTarget(
       threadId: existing,
       threadUrl: threadIdToUrl(existing),
       recipientProfileUrn: identity.profileUrn,
+      recipientProfileUrl: profileUrl,
     };
     if (identity.displayName) target.recipientDisplayName = identity.displayName;
     return target;
@@ -105,6 +108,7 @@ export async function resolveTarget(
     threadId: null,
     threadUrl: null,
     recipientProfileUrn: identity.profileUrn,
+    recipientProfileUrl: profileUrl,
     composeUrl: `https://www.linkedin.com/messaging/compose/?recipient=${identity.profileUrn}`,
   };
   if (identity.displayName) target.recipientDisplayName = identity.displayName;
@@ -312,8 +316,13 @@ export async function sendFromComposeUrl(
 
   await sendMessageInOpenThread(page, body);
 
-  // Attend la redirection vers /messaging/thread/<id>/
-  const deadline = Date.now() + 15_000;
+  // LinkedIn redirige tantôt l'URL vers /messaging/thread/<id>/, tantôt
+  // affiche le thread inline en gardant /messaging/compose/?recipient=…
+  // dans la barre. Dans ce cas le message est belnbel envoyé (visible dans
+  // le panneau gauche en "Vous : …"), il suffit de dériver le thread ID
+  // depuis les data-event-urn injectés. cf. tryResolveExistingThreadViaMessageOverlay.
+  const recipientUrn = extractRecipientUrnFromComposeUrl(composeUrl);
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const url = page.url();
     const m = url.match(THREAD_URL_RE);
@@ -321,13 +330,24 @@ export async function sendFromComposeUrl(
       const threadId = decodeURIComponent(m[1]);
       return { threadId, threadUrl: threadIdToUrl(threadId) };
     }
+    if (recipientUrn) {
+      const derived = await deriveThreadIdFromMessageUrns(page, recipientUrn);
+      if (derived) {
+        return { threadId: derived, threadUrl: threadIdToUrl(derived) };
+      }
+    }
     await sleep(500);
   }
 
-  await dumpPageState(page, "linkedin-compose-post-send-no-redirect", { composeUrl });
+  await dumpPageState(page, "linkedin-compose-post-send-no-redirect", { composeUrl, recipientUrn });
   throw new Error(
-    `Message envoyé depuis compose, mais pas de redirection vers /messaging/thread/ après 15s. Vérifie la page LinkedIn.`,
+    `Message envoyé depuis compose, mais pas de thread ID résolu après 30s (ni redirection URL ni data-event-urn). Vérifie la page LinkedIn.`,
   );
+}
+
+function extractRecipientUrnFromComposeUrl(composeUrl: string): string | null {
+  const m = composeUrl.match(/[?&]recipient=([A-Za-z0-9_-]+)/);
+  return m?.[1] ?? null;
 }
 
 function assertNotBlocked(page: Page): void {
@@ -810,10 +830,17 @@ export async function sendMessageInOpenThread(
 ): Promise<void> {
   const debug = process.env.SUPERSOCIAL_DEBUG === "true";
 
-  const composer = await page.waitForSelector(
-    ".msg-form__contenteditable[contenteditable='true'], [data-editor-container] [contenteditable='true']",
-    { timeout: 15_000 },
-  );
+  const composerSelector =
+    ".msg-form__contenteditable[contenteditable='true'], [data-editor-container] [contenteditable='true']";
+  const composer = await page
+    .waitForSelector(composerSelector, { timeout: 30_000 })
+    .catch(async (err: unknown) => {
+      await dumpPageState(page, "linkedin-dm-composer-not-visible", {
+        url: page.url(),
+        selector: composerSelector,
+      });
+      throw err;
+    });
   await composer.click();
   await sleep(400);
 
@@ -832,25 +859,36 @@ export async function sendMessageInOpenThread(
 
   const sendClicked = await page
     .evaluate(() => {
-      const btns = Array.from(
+      // Variante moderne: bouton icon-only `.msg-form__send-btn` (svg
+      // `data-test-icon="send-privately-small"`), pas d'aria-label ni de texte.
+      // Variante legacy: bouton avec aria-label/text "Envoyer"/"Send".
+      const direct = Array.from(
         document.querySelectorAll<HTMLButtonElement>(
-          "button.msg-form__send-button, button.msg-form__send-btn, button[type='submit']",
+          "button.msg-form__send-btn, button.msg-form__send-button",
         ),
       );
-      const candidates = btns.filter((b) => {
+      for (const b of direct) {
+        if (b.disabled) continue;
+        b.click();
+        return true;
+      }
+
+      const submits = Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button[type='submit']"),
+      );
+      for (const b of submits) {
+        if (b.disabled) continue;
         const aria = (b.getAttribute("aria-label") ?? "").toLowerCase();
         const text = (b.innerText ?? "").toLowerCase().trim();
-        return (
+        if (
           aria.includes("envoyer") ||
           aria.includes("send") ||
           text === "envoyer" ||
           text === "send"
-        );
-      });
-      for (const b of candidates) {
-        if (b.disabled) continue;
-        b.click();
-        return true;
+        ) {
+          b.click();
+          return true;
+        }
       }
       return false;
     })

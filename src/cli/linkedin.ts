@@ -8,6 +8,8 @@ import {
   writeConversation,
   readMyPostsKnownIds,
   readLastOutgoingBody,
+  renameConversationFiles,
+  enrichConversationParticipants,
 } from "../providers/linkedin/storage.js";
 import { extractPostIdFromUrl } from "../providers/linkedin/pages/comments.js";
 import {
@@ -17,6 +19,7 @@ import {
   markOutboxSent,
   markOutboxFailed,
   cancelOutboxItem,
+  retryOutboxItem,
   type OutboxItem,
   type OutboxStatus,
 } from "../providers/linkedin/outbox.js";
@@ -51,6 +54,19 @@ async function askYesNo(question: string): Promise<boolean> {
 function formatMessagePreview(body: string, maxLen = 120): string {
   const oneLine = body.replace(/\s+/g, " ").trim();
   return oneLine.length > maxLen ? oneLine.slice(0, maxLen - 1) + "…" : oneLine;
+}
+
+/**
+ * Compare deux bodies de message en tolérant les variations de présentation
+ * que LinkedIn peut introduire à l'affichage: NBSP vs espace, retours ligne
+ * différents, ponctuation Unicode (quotes courbes), variantes de
+ * normalisation (NFC vs NFD), majuscules/minuscules. On garde uniquement
+ * les lettres et chiffres pour comparer.
+ */
+function messageBodiesMatch(a: string, b: string): boolean {
+  const norm = (s: string): string =>
+    s.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  return norm(a) === norm(b);
 }
 
 export function registerLinkedInCommands(program: Command): void {
@@ -121,6 +137,37 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
+    .command("conversations:rename")
+    .description("Renommer les fichiers de conversation dont le slug est resté sur le thread ID. Tente d'abord d'enrichir les participants vides depuis la boîte d'envoi `sent/`.")
+    .action(() => {
+      // Pre-enrichissement: pour les conversations creees via compose dont
+      // `participants:` est reste vide, on retrouve nom + URL profil dans les
+      // items de la boite d'envoi qui ont ete envoyes (thread_id matche).
+      const sentItems = listOutboxItems(["sent"]).filter((it): it is OutboxItem & { threadId: string } => Boolean(it.threadId));
+      let enriched = 0;
+      for (const item of sentItems) {
+        const ok = enrichConversationParticipants(item.threadId, [
+          { name: item.recipientLabel, profileUrl: item.recipient },
+        ]);
+        if (ok) enriched++;
+      }
+      if (enriched > 0) console.log(`Enrichi ${enriched} conversation(s) depuis la boîte d'envoi.`);
+
+      const { renamed, skipped } = renameConversationFiles();
+      if (renamed.length === 0 && skipped.length === 0) {
+        console.log("Rien à renommer: aucune conversation avec un slug dégénéré.");
+        return;
+      }
+      for (const r of renamed) {
+        console.log(`✓ ${r.oldSlug} → ${r.newSlug}`);
+      }
+      for (const s of skipped) {
+        console.log(`- ${s.threadId}: ${s.reason}`);
+      }
+      console.log(`\n${renamed.length} renommé(s), ${skipped.length} sauté(s).`);
+    });
+
+  linkedin
     .command("thread <url>")
     .description("Synchroniser une conversation. url = URL profil (/in/slug/), URL thread (/messaging/thread/id/) ou thread ID")
     .action(async (url: string) => {
@@ -175,9 +222,9 @@ export function registerLinkedInCommands(program: Command): void {
           const lastOutgoing =
             [...messages].reverse().find((m) => m.outgoing)?.body ??
             readLastOutgoingBody(conversation.id);
-          if (!opts.force && lastOutgoing && lastOutgoing.trim() === body.trim()) {
+          if (!opts.force && lastOutgoing && messageBodiesMatch(lastOutgoing, body)) {
             throw new Error(
-              `Doublon détecté: le dernier message sortant a déjà le même body. Ajoute --force pour renvoyer quand même.`,
+              `Doublon détecté: le dernier message sortant a déjà le même body (comparaison alphanumérique). Ajoute --force pour renvoyer quand même.`,
             );
           }
         } else {
@@ -244,6 +291,48 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
+    .command("outbox:retry [ids...]")
+    .description("Repasser des items `failed` en `pending`. Sans argument, requiert --all. Filtrage optionnel par motif d'erreur.")
+    .option("--all", "rejouer tous les items en échec")
+    .option("--match <pattern>", "ne rejouer que les items dont l'erreur contient ce motif (insensible à la casse)")
+    .action((ids: string[], opts: { all?: boolean; match?: string }) => {
+      const failed = listOutboxItems(["failed"]);
+      if (failed.length === 0) {
+        console.log("Aucun item en échec.");
+        return;
+      }
+      let targets: OutboxItem[];
+      if (ids.length > 0) {
+        const requested = new Set(ids);
+        targets = failed.filter((it) => requested.has(it.id));
+        const missing = ids.filter((id) => !targets.some((t) => t.id === id));
+        if (missing.length > 0) {
+          console.error(`Item(s) en échec introuvable(s): ${missing.join(", ")}`);
+          process.exit(1);
+        }
+      } else if (opts.all) {
+        targets = failed;
+      } else {
+        console.error("Précise des IDs ou ajoute --all.");
+        process.exit(1);
+        return;
+      }
+      if (opts.match) {
+        const re = new RegExp(opts.match, "i");
+        targets = targets.filter((it) => re.test(it.error ?? ""));
+      }
+      if (targets.length === 0) {
+        console.log("Aucun item ne correspond au filtre.");
+        return;
+      }
+      for (const it of targets) {
+        retryOutboxItem(it);
+        console.log(`✓ ${it.id} (${it.recipientLabel}) → pending`);
+      }
+      console.log(`\n${targets.length} item(s) replacé(s) en attente.`);
+    });
+
+  linkedin
     .command("outbox:cancel <id>")
     .description("Annuler (supprimer) un item en attente")
     .action((id: string) => {
@@ -259,9 +348,8 @@ export function registerLinkedInCommands(program: Command): void {
     .command("outbox:send")
     .description("Traiter les items en attente (respecte la limite journalière dm et fait des pauses humaines entre les envois)")
     .option("-n, --count <n>", "nombre max d'items à envoyer cette session", (v) => parseInt(v, 10))
-    .option("-y, --yes", "ne pas demander confirmation par message")
     .option("--dry-run", "ne pas envoyer, juste afficher le plan")
-    .action(async (opts: { count?: number; yes?: boolean; dryRun?: boolean }) => {
+    .action(async (opts: { count?: number; dryRun?: boolean }) => {
       const pending = listOutboxItems(["pending"]);
       if (pending.length === 0) {
         console.log("Aucun item en attente.");
@@ -286,22 +374,39 @@ export function registerLinkedInCommands(program: Command): void {
         return;
       }
 
-      if (!opts.yes) {
-        const ok = await askYesNo(`Envoyer ${targetCount} message(s) ? [y/N] `);
-        if (!ok) {
-          console.error("Annulé.");
-          return;
-        }
-      }
-
       let sent = 0;
       let failed = 0;
+      let skipped = 0;
       // Un seul browser pour toute la boucle: évite N lancements de Chrome.
       await withProvider(async (p) => {
         for (const item of pending.slice(0, targetCount)) {
-          console.log(`\n[${sent + failed + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
+          console.log(`\n[${sent + failed + skipped + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
           console.log(`  ${formatMessagePreview(item.body, 100)}`);
           try {
+            // Dédup avant envoi: si le thread existe déjà et que le dernier
+            // message sortant est identique, considérer l'envoi comme déjà
+            // réalisé. Sécurise contre les retries après un faux négatif
+            // (ex: compose-no-redirect où le message part mais on lève
+            // l'exception, ou contre une queue créée sans `--force`).
+            // Pas de consommation de quota dm dans ce cas.
+            let dedupHit: { threadId: string; lastBody: string } | null = null;
+            try {
+              const snap = await p.readConversation(item.recipient);
+              const lastOutgoing = [...snap.messages].reverse().find((m) => m.outgoing);
+              if (lastOutgoing && messageBodiesMatch(lastOutgoing.body, item.body)) {
+                dedupHit = { threadId: snap.conversation.id, lastBody: lastOutgoing.body };
+              }
+            } catch {
+              // Pas de thread préalable: rien à dédup, on envoie normalement.
+            }
+
+            if (dedupHit) {
+              markOutboxSent(item, dedupHit.threadId, "déjà envoyé (dedup match)");
+              console.log(`  ↺ skip: dernier sortant identique sur thread ${dedupHit.threadId}`);
+              skipped++;
+              continue;
+            }
+
             const snap = await p.sendMessage(item.recipient, item.body);
             writeConversation(snap.conversation, snap.messages);
             markOutboxSent(item, snap.conversation.id);
@@ -317,13 +422,13 @@ export function registerLinkedInCommands(program: Command): void {
               break;
             }
           }
-          if (sent + failed < targetCount) {
+          if (sent + failed + skipped < targetCount) {
             await humanPause("dm");
           }
         }
       });
 
-      console.log(`\nBilan: ${sent} envoyé(s), ${failed} échec(s), ${pending.length - sent - failed} restant(s) en attente.`);
+      console.log(`\nBilan: ${sent} envoyé(s), ${skipped} skip(s) dedup, ${failed} échec(s), ${pending.length - sent - failed - skipped} restant(s) en attente.`);
     });
 
   linkedin

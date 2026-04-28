@@ -173,10 +173,24 @@ export class LinkedInProvider implements SocialProvider {
     const state = await extractThreadState(page, threadId, threadUrl);
     if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
     await checkPageForRedFlags(page);
+
+    // Thread tout neuf via compose: aucun en-tete de groupe "cote destinataire" puisqu'il
+    // n'y a que le message qu'on vient d'envoyer. extractParticipants retourne []. On
+    // injecte ce qu'on sait deja du destinataire (resolu depuis la page profil).
+    let participants = state.participants;
+    if (participants.length === 0 && target.recipientDisplayName) {
+      const fallback = {
+        name: target.recipientDisplayName,
+        ...(target.recipientProfileUrl ? { profileUrl: target.recipientProfileUrl } : {}),
+        ...(target.recipientProfileUrn ? { profileUrn: target.recipientProfileUrn } : {}),
+      };
+      participants = [fallback];
+    }
+
     const conversation: Conversation = {
       id: state.threadId,
       url: state.threadUrl,
-      participants: state.participants,
+      participants,
       unread: false,
       ...(state.messages.at(-1)?.sentAt ? { lastMessageAt: state.messages.at(-1)!.sentAt } : {}),
     };

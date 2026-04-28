@@ -20,6 +20,8 @@ Respecter les limites humaines quand plusieurs commandes s'enchaînent: 15-20 in
 
 Si une commande remonte `RateLimitHitError` (HTTP 429 ou 999), arrêter immédiatement toute commande LinkedIn pour la journée et prévenir l'utilisateur. Ne pas relancer.
 
+Avant tout retry d'envoi DM dont la tentative précédente a échoué, vérifier que le message n'est pas déjà parti côté LinkedIn. Certains chemins (`compose-no-redirect`, confirmations manquantes) lèvent une exception alors que LinkedIn a accepté l'envoi. La dédup intégrée à `outbox:send` (lecture du thread + comparaison du dernier sortant au body de l'item) couvre ce risque. Ne jamais court-circuiter cette dédup en bricolant un envoi direct sans vérification visuelle de la conversation.
+
 ## Skills Claude Code
 
 Les skills (`.claude/skills/*/SKILL.md`) doivent rester centrées sur leur fonction: frontmatter déclencheur, commandes à exécuter, gestion des erreurs visibles. Ne pas y documenter l'architecture interne, le throttling, le data layout, ni des règles que le code applique déjà.
