@@ -24,7 +24,7 @@ import {
   type OutboxStatus,
 } from "../providers/linkedin/outbox.js";
 import { getTodayCount, getDailyLimits, type CountedAction } from "../core/throttle-state.js";
-import { humanPause, RateLimitHitError } from "../core/throttle.js";
+import { humanPause, RateLimitHitError, LinkedInDmRestrictedError } from "../core/throttle.js";
 import type { SearchOptions } from "../core/provider.js";
 
 async function withProvider<T>(fn: (p: LinkedInProvider) => Promise<T>): Promise<T> {
@@ -421,6 +421,12 @@ export function registerLinkedInCommands(program: Command): void {
               console.error(`RateLimitHitError détecté. Arrêt immédiat de la boîte d'envoi.`);
               break;
             }
+            if (err instanceof LinkedInDmRestrictedError) {
+              console.error(
+                `LinkedIn refuse les DM gratuits (upsell Premium affiché). Arrêt du batch: les autres items non-1ère relation auront le même sort. Envoie d'abord une demande de connexion via \`linkedin connect <url>\` ou attends 24-48h que la restriction s'estompe.`,
+              );
+              break;
+            }
           }
           if (sent + failed + skipped < targetCount) {
             await humanPause("dm");
@@ -429,6 +435,77 @@ export function registerLinkedInCommands(program: Command): void {
       });
 
       console.log(`\nBilan: ${sent} envoyé(s), ${skipped} skip(s) dedup, ${failed} échec(s), ${pending.length - sent - failed - skipped} restant(s) en attente.`);
+    });
+
+  linkedin
+    .command("profile:status <url>")
+    .description("Lire le degré de relation, l'URN profil et l'état d'invitation/messagerie")
+    .action(async (url: string) => {
+      const status = await withProvider((p) => p.getProfileStatus(url));
+      console.log(`URL: ${status.url}`);
+      console.log(`Nom: ${status.name ?? "?"}`);
+      console.log(`URN: ${status.profileUrn ?? "?"}`);
+      console.log(`Degré: ${status.degree}`);
+      console.log(`Bouton Message visible: ${status.canMessage ? "oui" : "non"}`);
+      console.log(`Invitation déjà envoyée: ${status.invitationPending ? "oui" : "non"}`);
+    });
+
+  linkedin
+    .command("connect <url>")
+    .description("Envoyer une demande de connexion. Si --note, joint une note personnalisée. Court-circuite si déjà connecté ou invitation pendante.")
+    .option("--note <body>", "note personnalisée jointe à l'invitation (max ~300 caractères côté LinkedIn)")
+    .option("-y, --yes", "sauter la confirmation interactive")
+    .option("--dry-run", "ne pas envoyer, juste afficher l'état du profil et le plan")
+    .action(async (url: string, opts: { note?: string; yes?: boolean; dryRun?: boolean }) => {
+      await withProvider(async (p) => {
+        const status = await p.getProfileStatus(url);
+        console.error(`Cible: ${status.name ?? "?"} (${status.degree})`);
+        console.error(`URL: ${status.url}`);
+        if (status.profileUrn) console.error(`URN: ${status.profileUrn}`);
+        if (status.invitationPending) {
+          console.log(`Invitation déjà en attente, rien à faire.`);
+          return;
+        }
+        if (status.degree === "1st") {
+          console.log(`Déjà en 1ère relation, pas besoin d'inviter.`);
+          return;
+        }
+        if (status.degree === "out-of-network") {
+          console.error(`Profil hors réseau: l'invitation libre est probablement refusée. Tente quand même ?`);
+        }
+        if (opts.note) {
+          console.error(`Note (${opts.note.length} car):\n---\n${opts.note}\n---`);
+        } else {
+          console.error(`Pas de note (invitation simple).`);
+        }
+        if (opts.dryRun) {
+          console.error(`[dry-run] Pas d'envoi.`);
+          return;
+        }
+        if (!opts.yes) {
+          const ok = await askYesNo("Envoyer la demande de connexion ? [y/N] ");
+          if (!ok) {
+            console.error("Annulé.");
+            return;
+          }
+        }
+        const inviteOpts: { note?: string } = {};
+        if (opts.note) inviteOpts.note = opts.note;
+        const result = await p.sendConnectionInvite(url, inviteOpts);
+        if (result.status === "sent") {
+          console.log(`✓ Invitation envoyée${result.viaMoreMenu ? " (via menu Plus)" : ""}${result.withNote ? " avec note" : " sans note"}.`);
+        } else if (result.status === "already-pending") {
+          console.log(`Invitation déjà en attente.`);
+        } else if (result.status === "already-connected") {
+          console.log(`Déjà en 1ère relation.`);
+        } else if (result.status === "no-button") {
+          console.error(`✗ Aucun bouton de connexion trouvé: ${result.reason ?? ""}`);
+          process.exit(1);
+        } else {
+          console.error(`✗ Bloqué: ${result.reason ?? "raison inconnue"}`);
+          process.exit(1);
+        }
+      });
     });
 
   linkedin

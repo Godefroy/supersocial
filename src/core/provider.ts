@@ -79,6 +79,42 @@ export interface ThreadSnapshot {
   messages: Message[];
 }
 
+export type ConnectionDegree = "1st" | "2nd" | "3rd" | "out-of-network" | "unknown";
+
+export interface ProfileStatus {
+  /** URL canonique `/in/<slug>/`. */
+  url: string;
+  name?: string;
+  /** URN profil interne (`urn:li:fsd_profile:<id>`) quand extrait. */
+  profileUrn?: string;
+  degree: ConnectionDegree;
+  /** True si une invitation est déjà en attente (bouton "En attente" visible). */
+  invitationPending: boolean;
+  /**
+   * True si LinkedIn rend l'inbox messaging directement (1ère relation ou
+   * thread préexistant). False quand la cible est non-connectée et que l'envoi
+   * libre est refusé (l'upsell Premium s'affichera alors au compose).
+   */
+  canMessage: boolean;
+}
+
+export interface InviteResult {
+  /**
+   * sent: invitation envoyée avec succès dans cette commande.
+   * already-pending: une invitation était déjà en attente, no-op.
+   * already-connected: la cible est en 1ère relation, pas besoin d'inviter.
+   * no-button: aucun bouton d'invitation trouvé (visible ni dans Plus). Peut
+   * être un profil hors réseau, restreint, ou un changement de DOM LinkedIn.
+   * blocked: LinkedIn a refusé l'envoi (modal d'erreur, exigence email, etc).
+   */
+  status: "sent" | "already-pending" | "already-connected" | "no-button" | "blocked";
+  reason?: string;
+  /** True si le clic du bouton "Se connecter" passait par le menu "Plus" plutôt que par un bouton visible directement. */
+  viaMoreMenu?: boolean;
+  /** True si une note personnalisée a été jointe à l'invitation. */
+  withNote?: boolean;
+}
+
 export interface SocialProvider {
   readonly id: ProviderId;
 
@@ -89,6 +125,10 @@ export interface SocialProvider {
   readConversation(input: string): Promise<ThreadSnapshot>;
   /** Envoie et retourne le snapshot mis à jour (le message envoyé est dans messages). */
   sendMessage(input: string, body: string): Promise<ThreadSnapshot>;
+  /** Lit le degré de relation, les états du bouton Connect/Message, l'URN. URL profil obligatoire. */
+  getProfileStatus(url: string): Promise<ProfileStatus>;
+  /** Envoie une demande de connexion, optionnellement avec une note personnalisée. */
+  sendConnectionInvite(url: string, opts?: { note?: string }): Promise<InviteResult>;
   listComments(postId: string): Promise<Comment[]>;
   sendComment(postId: string, body: string): Promise<Comment>;
   publishPost(opts: PublishOptions): Promise<Post>;

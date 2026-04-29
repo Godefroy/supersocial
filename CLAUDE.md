@@ -22,6 +22,10 @@ Si une commande remonte `RateLimitHitError` (HTTP 429 ou 999), arrêter immédia
 
 Avant tout retry d'envoi DM dont la tentative précédente a échoué, vérifier que le message n'est pas déjà parti côté LinkedIn. Certains chemins (`compose-no-redirect`, confirmations manquantes) lèvent une exception alors que LinkedIn a accepté l'envoi. La dédup intégrée à `outbox:send` (lecture du thread + comparaison du dernier sortant au body de l'item) couvre ce risque. Ne jamais court-circuiter cette dédup en bricolant un envoi direct sans vérification visuelle de la conversation.
 
+Limiter les compose-DM vers des contacts non-1ère relation. Au-delà de 6-8 par jour, LinkedIn déclenche un soft block: la modale composer disparaît et est remplacée par l'upsell Premium/InMail (`h3.card-upsell-v2__headline`). `outbox:send` détecte ce signal en 3-5s et lève `LinkedInDmRestrictedError` qui interrompt le batch. Si ça arrive: arrêter pour 24-48h, ne pas relancer. Le bon workflow pour les non-connectés est `linkedin connect <url>` d'abord (avec ou sans note), attendre l'acceptation, puis seulement DM via thread existant.
+
+Si une commande remonte `LinkedInDmRestrictedError`, prévenir l'utilisateur, ne pas retry les items concernés tant que la restriction n'est pas levée. Les autres items 1ère relation peuvent continuer à être traités séparément.
+
 ## Skills Claude Code
 
 Les skills (`.claude/skills/*/SKILL.md`) doivent rester centrées sur leur fonction: frontmatter déclencheur, commandes à exécuter, gestion des erreurs visibles. Ne pas y documenter l'architecture interne, le throttling, le data layout, ni des règles que le code applique déjà.

@@ -8,6 +8,8 @@ import type {
   Conversation,
   Message,
   ThreadSnapshot,
+  ProfileStatus,
+  InviteResult,
 } from "../../core/provider.js";
 import type { ProviderId } from "../../core/storage.js";
 import { launchPersistentChrome, closeContext } from "../../core/browser.js";
@@ -31,6 +33,7 @@ import {
   sendMessageInOpenThread,
   sendFromComposeUrl,
 } from "./pages/messaging.js";
+import { readProfileStatus, sendInvite } from "./pages/profile.js";
 
 export class LinkedInProvider implements SocialProvider {
   readonly id: ProviderId = "linkedin";
@@ -196,6 +199,35 @@ export class LinkedInProvider implements SocialProvider {
     };
     return { conversation, messages: state.messages };
   }
+  async getProfileStatus(url: string): Promise<ProfileStatus> {
+    checkAndRecord("profile_view");
+    const page = await this.ensurePage();
+    const status = await readProfileStatus(page, url);
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    return status;
+  }
+
+  async sendConnectionInvite(url: string, opts: { note?: string } = {}): Promise<InviteResult> {
+    // Throttle: une invitation consomme un slot `invite` (limite 15/jour).
+    // L'éventuel court-circuit (already-pending / already-connected) ne consomme
+    // pas le slot car aucune action n'est tentée auprès de LinkedIn dans ce cas.
+    const page = await this.ensurePage();
+    // On lit le profil d'abord pour court-circuiter sans payer le throttle si déjà
+    // connecté ou invitation pendante.
+    checkAndRecord("profile_view");
+    const status = await readProfileStatus(page, url);
+    if (status.invitationPending) return { status: "already-pending" };
+    if (status.degree === "1st") return { status: "already-connected" };
+    checkAndRecord("invite");
+    const opt: { note?: string } = {};
+    if (opts.note) opt.note = opts.note;
+    const result = await sendInvite(page, url, opt);
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    return result;
+  }
+
   async listComments(postIdOrUrl: string): Promise<Comment[]> {
     checkAndRecord("read");
     const page = await this.ensurePage();

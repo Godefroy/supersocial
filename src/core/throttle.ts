@@ -98,6 +98,26 @@ export class RateLimitHitError extends Error {
   }
 }
 
+/**
+ * Levée quand LinkedIn refuse de rendre le composer DM et le remplace par
+ * l'upsell Premium/InMail (cas typique: 2e/3e degré sans Premium, ou
+ * restriction temporaire sur le compte après un burst de compose-DM). Le
+ * symptôme côté DOM est `.card-upsell-v2__headline` présent et `.msg-form`
+ * absent. À traiter comme un signal "stop le batch", car les autres items
+ * non-1ère relation auront le même sort dans la même session.
+ */
+export class LinkedInDmRestrictedError extends Error {
+  constructor(
+    public readonly recipient: string,
+    public readonly headline?: string,
+  ) {
+    super(
+      `DM refusé par LinkedIn (upsell Premium/InMail affiché) pour ${recipient}${headline ? `: "${headline}"` : ""}. La cible n'est probablement pas en 1ère relation, ou le compte est temporairement restreint suite à un burst d'envois.`,
+    );
+    this.name = "LinkedInDmRestrictedError";
+  }
+}
+
 export interface KillSwitchState {
   tripped: RateLimitHitError | null;
 }

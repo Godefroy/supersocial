@@ -35,6 +35,10 @@ Préparer un envoi en masse : `linkedin outbox:add` pour empiler les messages un
 
 Sécurité contre les doublons : `outbox:send` vérifie le thread cible avant chaque envoi et skip si le dernier message sortant est identique au body de l'item (item passe en `sent/` avec une note `dedup match`, sans consommer de quota DM). Couvre les retries qui suivent un faux négatif où le message avait été envoyé mais marqué `failed`.
 
+Détection du DM refusé : si LinkedIn affiche l'upsell Premium/InMail (typique pour les non-1ère relation, ou suite à un burst d'envois compose), le code détecte le marqueur `card-upsell-v2__headline` en 3-5s et lève `LinkedInDmRestrictedError` qui interrompt le batch outbox. Pour les cibles non-connectées, utiliser le workflow connect d'abord.
+
+Demande de connexion : `linkedin connect <url> [--note <body>]` envoie une invitation, gère les deux emplacements du bouton "Se connecter" (visible directement ou caché dans le menu "Plus" selon le degré). Court-circuite si déjà 1ère relation ou invitation pendante. `linkedin profile:status <url>` lit le degré de relation, l'URN, l'état du bouton Message et l'état d'invitation.
+
 Mode debug: `SUPERSOCIAL_DEBUG=true` sur n'importe quelle commande pour logs détaillés. `SUPERSOCIAL_STEALTH=false` pour désactiver le stealth plugin.
 
 ## Cron

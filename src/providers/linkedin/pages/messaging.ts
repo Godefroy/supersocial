@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import { createHash } from "node:crypto";
 import type { Author, Message } from "../../../core/provider.js";
-import { sleep } from "../../../core/throttle.js";
+import { sleep, LinkedInDmRestrictedError } from "../../../core/throttle.js";
 import { safeEval } from "../../../core/extract.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { cleanProfileUrl, extractProfileUrn } from "../profile-url.js";
@@ -355,6 +355,71 @@ function assertNotBlocked(page: Page): void {
   if (u.includes("/login") || u.includes("/checkpoint/")) {
     throw new Error(`Redirigé vers ${u}. Session LinkedIn expirée, relance \`linkedin login\`.`);
   }
+}
+
+/**
+ * Cherche le marqueur de l'upsell Premium qui remplace le composer quand
+ * LinkedIn refuse l'envoi gratuit (typiquement DM vers 2e/3e degré, ou
+ * compte flaggé après un burst). Retourne le headline lu (ex: "Envoyez un
+ * message à Martial avec Premium") si présent, sinon null. Selector exact
+ * extrait de la balise `h3.card-upsell-v2__headline`.
+ */
+async function detectDmRestriction(page: Page): Promise<string | null> {
+  const headline = await page
+    .evaluate(() => {
+      const el = document.querySelector<HTMLElement>("h3.card-upsell-v2__headline");
+      const text = el ? (el.innerText ?? "").trim() : "";
+      return text || null;
+    })
+    .catch(() => null);
+  return typeof headline === "string" ? headline : null;
+}
+
+/**
+ * Attend l'apparition du composer OU de l'upsell Premium, selon le premier
+ * qui arrive. Si Premium gagne la course, lève `LinkedInDmRestrictedError`
+ * sans attendre le timeout du composer. Le caller passe `recipient` à des
+ * fins de message d'erreur (URL profil ou URN).
+ */
+async function waitForComposerOrRestriction(
+  page: Page,
+  composerSelector: string,
+  timeoutMs: number,
+  recipient: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  // Première itération immédiate, puis poll toutes les 500ms. Le composer
+  // gagnera quasi systématiquement quand il est présent (rendering local
+  // rapide). L'upsell n'arrive que si LinkedIn décide de bloquer.
+  while (Date.now() < deadline) {
+    const headline = await detectDmRestriction(page);
+    if (headline) {
+      await dumpPageState(page, "linkedin-dm-restricted-by-premium", {
+        url: page.url(),
+        recipient,
+        headline,
+      });
+      throw new LinkedInDmRestrictedError(recipient, headline);
+    }
+    const composerVisible = await page
+      .evaluate((sel) => {
+        const el = document.querySelector<HTMLElement>(sel);
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }, composerSelector)
+      .catch(() => false);
+    if (composerVisible) return;
+    await sleep(500);
+  }
+  await dumpPageState(page, "linkedin-dm-composer-not-visible", {
+    url: page.url(),
+    selector: composerSelector,
+    recipient,
+  });
+  throw new Error(
+    `page.waitForSelector: Timeout ${timeoutMs}ms exceeded.\nCall log:\n  - waiting for locator('${composerSelector}') to be visible`,
+  );
 }
 
 /**
@@ -832,15 +897,8 @@ export async function sendMessageInOpenThread(
 
   const composerSelector =
     ".msg-form__contenteditable[contenteditable='true'], [data-editor-container] [contenteditable='true']";
-  const composer = await page
-    .waitForSelector(composerSelector, { timeout: 30_000 })
-    .catch(async (err: unknown) => {
-      await dumpPageState(page, "linkedin-dm-composer-not-visible", {
-        url: page.url(),
-        selector: composerSelector,
-      });
-      throw err;
-    });
+  await waitForComposerOrRestriction(page, composerSelector, 30_000, page.url());
+  const composer = await page.waitForSelector(composerSelector, { timeout: 5_000 });
   await composer.click();
   await sleep(400);
 

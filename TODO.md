@@ -26,6 +26,7 @@ Infra :
 - Dédup des messages par `data-event-urn`, refus du doublon au `dm` (sauf `--force`)
 - Stockage conversations dans `data/linkedin/conversations/<slug>.md` avec index JSON par thread_id
 - Outbox : pending/sent/failed sous `data/linkedin/outbox/`, un markdown par item. `outbox:send` dédup avant chaque envoi (compare le dernier sortant du thread au body), un match passe l'item en `sent` avec note sans consommer de quota dm
+- Détection de DM refusé via `card-upsell-v2__headline` (upsell Premium): fast-fail en 3-5s avec `LinkedInDmRestrictedError`, break du batch outbox
 - Résolution URL profil → thread ID via dérivation base64 depuis les `data-event-urn` (décoder, prendre la partie après `&`, réencoder avec préfixe `2-`). Évite la recherche inbox, gère homonymes et threads anciens
 - Détection outgoing par comparaison URN sender (data-event-urn) ∉ participants "autres" (où self est filtré par nom depuis l'alt de `.global-nav__me-photo`)
 
@@ -40,6 +41,9 @@ Infra :
 
 - [x] `linkedin dm <url> <body>` : envoyer un DM
 - [x] `linkedin outbox:*` : préparer et envoyer des DM en batch
+- [x] `linkedin connect <url> [--note <body>]` : envoyer une invitation, avec ou sans note (gère le bouton "Se connecter" visible direct ou dans le menu "Plus")
+- [x] `linkedin profile:status <url>` : lire degré, URN, état Message/invitation
+- [ ] Workflow chaîné `invite → wait → dm` : commande `outbox:add --kind invite-then-dm <url> <body>` qui envoie l'invitation, attend l'acceptation, puis DM. Nécessite un état "waiting-for-acceptance" dans l'outbox et un poll périodique du degré
 - [ ] `linkedin comment <postId> <body>` : poster un commentaire
 - [ ] `linkedin publish <body>` : publier un post
 

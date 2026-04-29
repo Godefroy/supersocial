@@ -1,6 +1,6 @@
 ---
 name: supersocial
-description: Automatiser LinkedIn (chercher/poster des posts, lire/envoyer des DM, boîte d'envoi, lire/poster des commentaires, synchroniser l'inventaire de ses posts). À utiliser dès que l'utilisateur demande une action LinkedIn.
+description: Automatiser LinkedIn (chercher/poster des posts, lire/envoyer des DM, boîte d'envoi, demander des connexions avec ou sans note, lire le degré de relation d'un profil, lire/poster des commentaires, synchroniser l'inventaire de ses posts). À utiliser dès que l'utilisateur demande une action LinkedIn.
 ---
 
 # supersocial
@@ -14,6 +14,10 @@ npm run dev -- linkedin throttle:status
 npm run dev -- linkedin search <query> [-n 20] [--since past-24h|past-week|past-month]
 npm run dev -- linkedin posts:sync [-n 50] [--all]
 npm run dev -- linkedin posts:sync:latest [-n 200]
+
+# Profils et invitations
+npm run dev -- linkedin profile:status <url>
+npm run dev -- linkedin connect <url> [--note <body>] [--yes] [--dry-run]
 
 # Conversations privées
 npm run dev -- linkedin thread <url>
@@ -56,9 +60,17 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 
 Avant chaque envoi, `outbox:send` vérifie le thread cible et compare le dernier message sortant au body de l'item. Si match exact, l'item passe direct en `sent/` avec `note: déjà envoyé (dedup match)` sans consommer de quota dm. Sécurise les retries après un faux négatif (ex: compose-no-redirect où le message a été envoyé mais l'exception a été levée).
 
+## profile:status et connect
+
+`profile:status <url>` charge la page profil et affiche degré (1st/2nd/3rd/out-of-network/unknown), URN, nom, état du bouton Message et état d'invitation.
+
+`connect <url>` envoie une demande de connexion. Court-circuite si déjà 1ère relation ou invitation pendante. Le bouton "Se connecter" est cherché en visible direct d'abord, puis dans le menu "Plus" en fallback (selon le degré). Avec `--note`, ouvre la modale de note personnalisée et y tape le body. Sans note, clique "Envoyer sans note". Confirme l'envoi en attendant la fermeture de la modale.
+
 ## Gestion d'erreur
 
 Si une commande affiche `RateLimitHitError`, arrêter immédiatement toute commande LinkedIn et prévenir l'utilisateur. Ne pas réessayer.
+
+Si `LinkedInDmRestrictedError` (DM refusé, upsell Premium affiché), arrêter le batch outbox et prévenir l'utilisateur. La cible n'est probablement pas en 1ère relation, ou un burst récent a déclenché une restriction temporaire. Proposer `linkedin connect <url>` pour envoyer une invitation d'abord, puis DM seulement après acceptation.
 
 Si `Cookies LinkedIn manquants` ou `Pas de session LinkedIn dans le profil Chrome`, lancer `npm run dev -- linkedin login` pour connecter le profil Chrome persistant.
 
