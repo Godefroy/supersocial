@@ -111,6 +111,17 @@ export class LinkedInProvider implements SocialProvider {
     this.loadedThreadUrl = threadUrl;
   }
 
+  /**
+   * Expose la cible résolue (cache provider). Charge le profil si pas encore
+   * en cache. Utilisé par les pre-flights CLI qui veulent connaître le degré
+   * de relation avant de tenter un envoi, sans payer un second profile load
+   * (car `readConversation` et `sendMessage` réutilisent la même cache).
+   */
+  async resolveTargetForInput(input: string): Promise<Awaited<ReturnType<typeof resolveTarget>>> {
+    const page = await this.ensurePage();
+    return this.getOrResolveTarget(page, input);
+  }
+
   async resolveThread(input: string): Promise<{ threadId: string; threadUrl: string }> {
     checkAndRecord("read");
     const page = await this.ensurePage();

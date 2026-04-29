@@ -8,6 +8,18 @@
 # Outbox: 3 creneaux dans les fenetres humaines lu-ve 9h-12h / 14h-18h.
 # Le 1er run absorbe le plafond journalier (40 DM), les suivants rattrapent en cas
 # d'echec ou sont no-op si tout est parti. Verrou global = au plus un cron a la fois.
+# Pre-flight: skip les items dont la cible n'est pas en 1ere relation (waiting).
 0 10  * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:send
 30 14 * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:send
 0 17  * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:send
+
+# Invitations: 2 creneaux dans les fenetres humaines, 1ere relation absorbant
+# pour les invitations queue via `invite:add` ou `invite:add --then-dm`.
+30 10 * * 1-5 __REPO__/scripts/cron.sh linkedin invite:send
+0 15  * * 1-5 __REPO__/scripts/cron.sh linkedin invite:send
+
+# Acceptations: 1 fois par jour, re-verifie les `sent/` et les passe en
+# `accepted/` quand la cible est devenue 1ere relation. Cle pour le workflow
+# `invite --then-dm` qui debloque les DMs en attente (outbox:send skip tant
+# que la cible n'est pas 1ere relation, fire automatiquement quand ca matche).
+0 9 * * 1-5 __REPO__/scripts/cron.sh linkedin invite:check

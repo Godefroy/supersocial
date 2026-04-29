@@ -27,6 +27,12 @@ export const linkedinPaths = {
   outboxSentDir: () => join(base(), "outbox", "sent"),
   outboxFailedDir: () => join(base(), "outbox", "failed"),
 
+  invitationsDir: () => join(base(), "invitations"),
+  invitationsPendingDir: () => join(base(), "invitations", "pending"),
+  invitationsSentDir: () => join(base(), "invitations", "sent"),
+  invitationsAcceptedDir: () => join(base(), "invitations", "accepted"),
+  invitationsFailedDir: () => join(base(), "invitations", "failed"),
+
   commentsDir: () => join(base(), "comments"),
   commentsFile: (postId: string) => join(base(), "comments", `${slugify(postId)}.md`),
 };

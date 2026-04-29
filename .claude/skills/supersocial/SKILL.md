@@ -19,6 +19,14 @@ npm run dev -- linkedin posts:sync:latest [-n 200]
 npm run dev -- linkedin profile:status <url>
 npm run dev -- linkedin connect <url> [--note <body>] [--yes] [--dry-run]
 
+# File d'invitations (préparer puis envoyer en batch sous throttling)
+npm run dev -- linkedin invite:add <url> [--note <body>] [--label <label>]
+npm run dev -- linkedin invite:list [--status pending|sent|accepted|failed|all]
+npm run dev -- linkedin invite:send [-n N] [--dry-run]
+npm run dev -- linkedin invite:check [-n N]
+npm run dev -- linkedin invite:retry [ids...] [--all] [--match <motif>]
+npm run dev -- linkedin invite:cancel <id>
+
 # Conversations privées
 npm run dev -- linkedin thread <url>
 npm run dev -- linkedin dm <url> <body> [--yes] [--dry-run] [--force] [--queue]
@@ -64,7 +72,17 @@ Avant chaque envoi, `outbox:send` vérifie le thread cible et compare le dernier
 
 `profile:status <url>` charge la page profil et affiche degré (1st/2nd/3rd/out-of-network/unknown), URN, nom, état du bouton Message et état d'invitation.
 
-`connect <url>` envoie une demande de connexion. Court-circuite si déjà 1ère relation ou invitation pendante. Le bouton "Se connecter" est cherché en visible direct d'abord, puis dans le menu "Plus" en fallback (selon le degré). Avec `--note`, ouvre la modale de note personnalisée et y tape le body. Sans note, clique "Envoyer sans note". Confirme l'envoi en attendant la fermeture de la modale.
+`connect <url>` envoie une demande de connexion. Court-circuite si déjà 1ère relation ou invitation pendante. Le bouton "Se connecter" est cherché en visible direct d'abord, puis dans le menu "Plus" en fallback (selon le degré). Avec `--note`, ouvre la modale de note personnalisée et y tape le body. Sans note, clique "Envoyer sans note". Trace l'envoi dans `data/linkedin/invitations/sent/` (ou `accepted/` si la cible est déjà 1ère relation).
+
+## File d'invitations
+
+Symétrique à l'outbox DM. Les invitations sont stockées en markdown dans `data/linkedin/invitations/` avec sous-dossiers `pending/`, `sent/`, `accepted/`, `failed/`. Le body du fichier contient la note (vide pour invitation simple).
+
+`invite:add <url> [--note <body>] [--then-dm <body>]` queue une invitation. Avec `--then-dm`, queue aussi un DM dans l'outbox qui ne partira que quand la cible sera passée 1ère relation. `invite:send` traite le batch en respectant la limite invite (15/jour) avec `humanPause("invite")` entre chaque. Les `already-pending` côté LinkedIn passent direct en `sent`, les `already-connected` passent direct en `accepted`. `invite:check` re-vérifie l'état des invitations en `sent` et déplace en `accepted` quand la cible est devenue 1ère relation. `invite:retry` rejoue les `failed`, `invite:cancel` retire une `pending`.
+
+## Workflow chaîné invite → DM
+
+`outbox:send` applique un pre-flight de degré de relation: les items dont la cible n'est pas 1ère relation restent en pending sans humanPause (statut `waiting`). Combiné avec `invite:check` en cron, ça permet le workflow: `invite:add <url> --then-dm <body>` queue l'invitation et le DM. Le cron `invite:send` envoie l'invitation. Le cron `invite:check` re-vérifie chaque jour et marque acceptée quand la cible passe 1ère relation. Au cron `outbox:send` suivant, le DM trouve la cible en 1ère relation et part automatiquement.
 
 ## Gestion d'erreur
 

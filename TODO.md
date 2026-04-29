@@ -43,7 +43,10 @@ Infra :
 - [x] `linkedin outbox:*` : préparer et envoyer des DM en batch
 - [x] `linkedin connect <url> [--note <body>]` : envoyer une invitation, avec ou sans note (gère le bouton "Se connecter" visible direct ou dans le menu "Plus")
 - [x] `linkedin profile:status <url>` : lire degré, URN, état Message/invitation
-- [ ] Workflow chaîné `invite → wait → dm` : commande `outbox:add --kind invite-then-dm <url> <body>` qui envoie l'invitation, attend l'acceptation, puis DM. Nécessite un état "waiting-for-acceptance" dans l'outbox et un poll périodique du degré
+- [x] `linkedin invite:*` : file d'invitations symétrique à l'outbox (`add|list|send|check|retry|cancel`), stockage `data/linkedin/invitations/{pending,sent,accepted,failed}/`. `invite:check` re-vérifie l'état des envoyées et déplace en `accepted/` quand la cible est passée 1ère relation.
+- [x] Workflow chaîné `invite → wait → dm`: `invite:add --then-dm <body>` queue invitation + DM atomiquement. `outbox:send` skip les DMs dont la cible n'est pas 1ère relation (statut `waiting`, reste en pending sans humanPause). Cron `invite:check` marque acceptée → cron `outbox:send` suivant fire le DM.
+- [x] Pre-flight degré dans `outbox:send` (jamais DM si non-1ère relation, partage cache profil avec `readConversation`)
+- [x] Cron entries pour `invite:send` (2x/jour) et `invite:check` (1x/jour)
 - [ ] `linkedin comment <postId> <body>` : poster un commentaire
 - [ ] `linkedin publish <body>` : publier un post
 

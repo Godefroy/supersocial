@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import { createHash } from "node:crypto";
-import type { Author, Message } from "../../../core/provider.js";
+import type { Author, ConnectionDegree, Message } from "../../../core/provider.js";
 import { sleep, LinkedInDmRestrictedError } from "../../../core/throttle.js";
 import { safeEval } from "../../../core/extract.js";
 import { dumpPageState } from "../../../core/debug.js";
@@ -50,6 +50,13 @@ export interface ResolvedTarget {
   recipientDisplayName?: string;
   /** URL compose à utiliser pour un envoi neuf si threadId == null. */
   composeUrl?: string;
+  /**
+   * Degré de relation extrait de la page profil au moment de la résolution
+   * (lecture des aria-labels `<Name> ... 2e`). Présent uniquement quand
+   * l'input est une URL profil (passage par la page profil). Null pour les
+   * inputs URL/ID thread où on ne charge pas le profil.
+   */
+  recipientDegree?: ConnectionDegree;
 }
 
 /**
@@ -89,6 +96,8 @@ export async function resolveTarget(
     );
   }
 
+  const degree = mapDegreeText(identity.degreeText);
+
   const existing = await tryResolveExistingThreadViaMessageOverlay(
     page,
     identity.profileUrn,
@@ -99,6 +108,7 @@ export async function resolveTarget(
       threadUrl: threadIdToUrl(existing),
       recipientProfileUrn: identity.profileUrn,
       recipientProfileUrl: profileUrl,
+      recipientDegree: degree,
     };
     if (identity.displayName) target.recipientDisplayName = identity.displayName;
     return target;
@@ -110,6 +120,7 @@ export async function resolveTarget(
     recipientProfileUrn: identity.profileUrn,
     recipientProfileUrl: profileUrl,
     composeUrl: `https://www.linkedin.com/messaging/compose/?recipient=${identity.profileUrn}`,
+    recipientDegree: degree,
   };
   if (identity.displayName) target.recipientDisplayName = identity.displayName;
   return target;
@@ -253,13 +264,16 @@ export async function resolveThreadFromInput(
 interface ProfileIdentity {
   profileUrn: string | null;
   displayName: string | null;
+  /** Texte brut du badge degré ("1er", "2e", "3e+", etc.) ou "" si non trouvé. */
+  degreeText: string;
 }
 
 /**
- * Extrait l'URN profil et le nom d'affichage depuis la page profil ouverte.
- * L'URN se déduit de la fréquence des compose links (le plus fréquent est
- * celui de la personne regardée, par opposition aux suggestions).
- * Le nom vient du `<h1>` principal ou du `<title>` de la page.
+ * Extrait l'URN profil, le nom et le degré de relation depuis la page profil
+ * ouverte. URN se déduit de la fréquence des compose links. Nom vient du
+ * `<h1>`. Degré est lu dans les aria-labels `<Name> ... 2e` (la nouvelle UI
+ * React de LinkedIn encode le degré dans les entity-lockups, notamment dans
+ * la section activity).
  */
 async function extractProfileIdentity(page: Page): Promise<ProfileIdentity> {
   const result = await page
@@ -288,15 +302,35 @@ async function extractProfileIdentity(page: Page): Promise<ProfileIdentity> {
       }
       if (!displayName) {
         const title = (document.title ?? "").trim();
-        // Format type "Pierre-Luc Lelouch | LinkedIn" ou "(2) Pierre-Luc Lelouch - CEO | LinkedIn".
-        // On coupe au séparateur `|` uniquement (garder les traits d'union dans le nom).
         const m = title.match(/^(?:\(\d+\)\s*)?([^|]+?)(?:\s*\|.*)?$/);
         displayName = m?.[1]?.trim() ?? null;
       }
-      return { profileUrn, displayName };
+
+      // Degré: scan tous les aria-labels qui commencent par le nom de la
+      // cible et finissent par un degré reconnaissable. Cf. doc dans
+      // pages/profile.ts (même logique).
+      let degreeText = "";
+      const nameTrim = (displayName ?? "").trim();
+      if (nameTrim) {
+        const ariaElements = Array.from(document.querySelectorAll<HTMLElement>("[aria-label]"));
+        for (const el of ariaElements) {
+          const aria = (el.getAttribute("aria-label") ?? "").trim();
+          if (!aria.startsWith(nameTrim)) continue;
+          const m = aria.match(/(?:^|\s)(1er|1ère|2e|3e\+?|2nd|3rd)\s*$/i);
+          if (m?.[1]) { degreeText = m[1].toLowerCase(); break; }
+        }
+      }
+      return { profileUrn, displayName, degreeText };
     })
-    .catch(() => ({ profileUrn: null, displayName: null }));
-  return result ?? { profileUrn: null, displayName: null };
+    .catch(() => ({ profileUrn: null, displayName: null, degreeText: "" }));
+  return result ?? { profileUrn: null, displayName: null, degreeText: "" };
+}
+
+function mapDegreeText(text: string): ConnectionDegree {
+  if (text === "1er" || text === "1ère" || text === "1st") return "1st";
+  if (text === "2e" || text === "2nd") return "2nd";
+  if (text === "3e" || text === "3e+" || text === "3rd") return "3rd";
+  return "unknown";
 }
 
 /**

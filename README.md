@@ -39,6 +39,10 @@ Détection du DM refusé : si LinkedIn affiche l'upsell Premium/InMail (typique 
 
 Demande de connexion : `linkedin connect <url> [--note <body>]` envoie une invitation, gère les deux emplacements du bouton "Se connecter" (visible directement ou caché dans le menu "Plus" selon le degré). Court-circuite si déjà 1ère relation ou invitation pendante. `linkedin profile:status <url>` lit le degré de relation, l'URN, l'état du bouton Message et l'état d'invitation.
 
+File d'invitations : `linkedin invite:add` empile, `linkedin invite:send -n N` traite par lots (limite 15/jour), `linkedin invite:check` re-vérifie l'état des invitations envoyées et déplace celles acceptées vers `accepted/`. `invite:retry` rejoue les échecs, `invite:cancel` retire une pending. Stockage symétrique à l'outbox dans `data/linkedin/invitations/{pending,sent,accepted,failed}/` avec un fichier markdown par invitation.
+
+Workflow chaîné invite → DM : `linkedin invite:add <url> --note "..." --then-dm "..."` queue à la fois une invitation et un DM. Le DM partira automatiquement quand la cible passera en 1ère relation, grâce au pre-flight de degré dans `outbox:send` qui skip (statut `waiting`) tant que la cible n'est pas connectée. Le cron `invite:check` (1x/jour) marque les invitations acceptées; le cron `outbox:send` (3x/jour) re-tente les DMs et fire ceux dont la cible est passée 1ère relation.
+
 Mode debug: `SUPERSOCIAL_DEBUG=true` sur n'importe quelle commande pour logs détaillés. `SUPERSOCIAL_STEALTH=false` pour désactiver le stealth plugin.
 
 ## Cron

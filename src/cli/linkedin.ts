@@ -23,6 +23,19 @@ import {
   type OutboxItem,
   type OutboxStatus,
 } from "../providers/linkedin/outbox.js";
+import {
+  addInvitation,
+  listInvitations,
+  findInvitationById,
+  markInvitationSent,
+  markInvitationFailed,
+  markInvitationAccepted,
+  cancelInvitation,
+  retryInvitation,
+  recordDirectInvitation,
+  type Invitation,
+  type InvitationStatus,
+} from "../providers/linkedin/invitations.js";
 import { getTodayCount, getDailyLimits, type CountedAction } from "../core/throttle-state.js";
 import { humanPause, RateLimitHitError, LinkedInDmRestrictedError } from "../core/throttle.js";
 import type { SearchOptions } from "../core/provider.js";
@@ -377,12 +390,26 @@ export function registerLinkedInCommands(program: Command): void {
       let sent = 0;
       let failed = 0;
       let skipped = 0;
+      let waitingNotConnected = 0;
       // Un seul browser pour toute la boucle: évite N lancements de Chrome.
       await withProvider(async (p) => {
         for (const item of pending.slice(0, targetCount)) {
-          console.log(`\n[${sent + failed + skipped + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
+          console.log(`\n[${sent + failed + skipped + waitingNotConnected + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
           console.log(`  ${formatMessagePreview(item.body, 100)}`);
           try {
+            // Pre-flight: ne JAMAIS DM si la cible n'est pas en 1ère relation.
+            // LinkedIn refusera et affichera l'upsell Premium. La résolution
+            // charge le profil une seule fois (cache provider), donc le coût
+            // est partagé avec le `readConversation` qui suit.
+            const target = await p.resolveTargetForInput(item.recipient);
+            if (target.recipientDegree && target.recipientDegree !== "1st") {
+              console.log(
+                `  ⏸ skip (waiting): pas en 1ère relation (degré=${target.recipientDegree}). Item reste en pending; envoie une demande de connexion via \`linkedin connect ${item.recipient}\` ou attends qu'elle soit acceptée.`,
+              );
+              waitingNotConnected++;
+              continue;
+            }
+
             // Dédup avant envoi: si le thread existe déjà et que le dernier
             // message sortant est identique, considérer l'envoi comme déjà
             // réalisé. Sécurise contre les retries après un faux négatif
@@ -428,13 +455,16 @@ export function registerLinkedInCommands(program: Command): void {
               break;
             }
           }
-          if (sent + failed + skipped < targetCount) {
+          // humanPause uniquement quand on a effectivement déclenché une
+          // action DM (envoyé, dedup-skipped, ou échec). Le `continue` sur
+          // waiting saute cette section, donc pas de pause sur ces items.
+          if (sent + failed + skipped + waitingNotConnected < targetCount) {
             await humanPause("dm");
           }
         }
       });
 
-      console.log(`\nBilan: ${sent} envoyé(s), ${skipped} skip(s) dedup, ${failed} échec(s), ${pending.length - sent - failed - skipped} restant(s) en attente.`);
+      console.log(`\nBilan: ${sent} envoyé(s), ${skipped} skip(s) dedup, ${waitingNotConnected} waiting (non-1ère relation), ${failed} échec(s), ${pending.length - sent - failed - skipped - waitingNotConnected} restant(s) en attente.`);
     });
 
   linkedin
@@ -462,17 +492,18 @@ export function registerLinkedInCommands(program: Command): void {
         console.error(`Cible: ${status.name ?? "?"} (${status.degree})`);
         console.error(`URL: ${status.url}`);
         if (status.profileUrn) console.error(`URN: ${status.profileUrn}`);
+
+        // Court-circuits via état lu, mais on continue pour TRACER dans
+        // `data/linkedin/invitations/` (le provider applique les mêmes courts-
+        // circuits côté envoi sans coût quota; ici on veut juste persister).
         if (status.invitationPending) {
-          console.log(`Invitation déjà en attente, rien à faire.`);
-          return;
-        }
-        if (status.degree === "1st") {
-          console.log(`Déjà en 1ère relation, pas besoin d'inviter.`);
-          return;
-        }
-        if (status.degree === "out-of-network") {
+          console.log(`Invitation déjà en attente côté LinkedIn (pas d'envoi, juste traçage local).`);
+        } else if (status.degree === "1st") {
+          console.log(`Déjà en 1ère relation (pas d'envoi, juste traçage local en accepted/).`);
+        } else if (status.degree === "out-of-network") {
           console.error(`Profil hors réseau: l'invitation libre est probablement refusée. Tente quand même ?`);
         }
+
         if (opts.note) {
           console.error(`Note (${opts.note.length} car):\n---\n${opts.note}\n---`);
         } else {
@@ -482,7 +513,7 @@ export function registerLinkedInCommands(program: Command): void {
           console.error(`[dry-run] Pas d'envoi.`);
           return;
         }
-        if (!opts.yes) {
+        if (!opts.yes && !status.invitationPending && status.degree !== "1st") {
           const ok = await askYesNo("Envoyer la demande de connexion ? [y/N] ");
           if (!ok) {
             console.error("Annulé.");
@@ -494,10 +525,40 @@ export function registerLinkedInCommands(program: Command): void {
         const result = await p.sendConnectionInvite(url, inviteOpts);
         if (result.status === "sent") {
           console.log(`✓ Invitation envoyée${result.viaMoreMenu ? " (via menu Plus)" : ""}${result.withNote ? " avec note" : " sans note"}.`);
+          // Tracer dans data/linkedin/invitations/sent/ pour suivi local.
+          if (status.profileUrn) {
+            const recordParams: Parameters<typeof recordDirectInvitation>[0] = {
+              recipient: status.url,
+              recipientUrn: status.profileUrn,
+              status: "sent",
+            };
+            if (status.name) recordParams.recipientLabel = status.name;
+            if (opts.note) recordParams.note = opts.note;
+            const inv = recordDirectInvitation(recordParams);
+            console.log(`  Trace: ${inv.file}`);
+          }
         } else if (result.status === "already-pending") {
           console.log(`Invitation déjà en attente.`);
+          if (status.profileUrn) {
+            const recordParams: Parameters<typeof recordDirectInvitation>[0] = {
+              recipient: status.url,
+              recipientUrn: status.profileUrn,
+              status: "sent",
+            };
+            if (status.name) recordParams.recipientLabel = status.name;
+            recordDirectInvitation(recordParams);
+          }
         } else if (result.status === "already-connected") {
           console.log(`Déjà en 1ère relation.`);
+          if (status.profileUrn) {
+            const recordParams: Parameters<typeof recordDirectInvitation>[0] = {
+              recipient: status.url,
+              recipientUrn: status.profileUrn,
+              status: "accepted",
+            };
+            if (status.name) recordParams.recipientLabel = status.name;
+            recordDirectInvitation(recordParams);
+          }
         } else if (result.status === "no-button") {
           console.error(`✗ Aucun bouton de connexion trouvé: ${result.reason ?? ""}`);
           process.exit(1);
@@ -506,6 +567,233 @@ export function registerLinkedInCommands(program: Command): void {
           process.exit(1);
         }
       });
+    });
+
+  linkedin
+    .command("invite:add <url>")
+    .description("Ajouter une invitation à la file d'attente. Avec --then-dm, queue aussi un DM qui partira automatiquement après acceptation de l'invitation (outbox:send skip les non-1ère relation, donc le DM attend tout seul que la cible passe en 1ère relation).")
+    .option("--note <body>", "note personnalisée jointe à l'invitation")
+    .option("--label <label>", "libellé lisible pour cet item")
+    .option("--then-dm <body>", "queue aussi un DM dans l'outbox qui partira après acceptation")
+    .action((url: string, opts: { note?: string; label?: string; thenDm?: string }) => {
+      const params: Parameters<typeof addInvitation>[0] = { recipient: url };
+      if (opts.note) params.note = opts.note;
+      if (opts.label) params.label = opts.label;
+      const inv = addInvitation(params);
+      console.log(`Invitation ajoutée: ${inv.id} | ${inv.recipientLabel}${opts.note ? ` | note (${opts.note.length} car)` : " | sans note"}`);
+      console.log(`  ${inv.file}`);
+
+      if (opts.thenDm) {
+        const dmParams: Parameters<typeof addOutboxItem>[0] = { recipient: url, body: opts.thenDm };
+        if (opts.label) dmParams.label = opts.label;
+        const dm = addOutboxItem(dmParams);
+        console.log(`DM chaîné ajouté: ${dm.id} | ${dm.recipientLabel} | ${formatMessagePreview(opts.thenDm, 60)}`);
+        console.log(`  ${dm.file}`);
+        console.log(`Le DM partira automatiquement quand outbox:send détectera la cible en 1ère relation (après acceptation).`);
+      }
+    });
+
+  linkedin
+    .command("invite:list")
+    .description("Lister les invitations")
+    .option("--status <s>", "pending | sent | accepted | failed | all", "pending")
+    .action((opts: { status: string }) => {
+      const statuses: InvitationStatus[] =
+        opts.status === "all"
+          ? ["pending", "sent", "accepted", "failed"]
+          : ([opts.status] as InvitationStatus[]);
+      const items = listInvitations(statuses);
+      if (items.length === 0) {
+        console.log("Aucune invitation.");
+        return;
+      }
+      console.log(`ID        Status    Destinataire                          Note`);
+      console.log(`--------  --------  ------------------------------------  ----`);
+      for (const inv of items) {
+        const notePreview = inv.note ? formatMessagePreview(inv.note, 40) : "(simple)";
+        console.log(
+          `${inv.id.padEnd(8)}  ${inv.status.padEnd(8)}  ${inv.recipientLabel.slice(0, 36).padEnd(36)}  ${notePreview}`,
+        );
+      }
+    });
+
+  linkedin
+    .command("invite:cancel <id>")
+    .description("Annuler une invitation en attente")
+    .action((id: string) => {
+      const inv = cancelInvitation(id);
+      if (!inv) {
+        console.error(`Invitation introuvable: ${id}`);
+        process.exit(1);
+      }
+      console.log(`Annulée: ${inv.id} (${inv.recipientLabel})`);
+    });
+
+  linkedin
+    .command("invite:retry [ids...]")
+    .description("Repasser des invitations `failed` en `pending`. Sans argument, requiert --all.")
+    .option("--all", "rejouer toutes les invitations en échec")
+    .option("--match <pattern>", "ne rejouer que celles dont l'erreur contient ce motif (insensible à la casse)")
+    .action((ids: string[], opts: { all?: boolean; match?: string }) => {
+      const failed = listInvitations(["failed"]);
+      if (failed.length === 0) {
+        console.log("Aucune invitation en échec.");
+        return;
+      }
+      let targets: Invitation[];
+      if (ids.length > 0) {
+        const requested = new Set(ids);
+        targets = failed.filter((it) => requested.has(it.id));
+        const missing = ids.filter((id) => !targets.some((t) => t.id === id));
+        if (missing.length > 0) {
+          console.error(`Invitation(s) en échec introuvable(s): ${missing.join(", ")}`);
+          process.exit(1);
+        }
+      } else if (opts.all) {
+        targets = failed;
+      } else {
+        console.error("Précise des IDs ou ajoute --all.");
+        process.exit(1);
+        return;
+      }
+      if (opts.match) {
+        const re = new RegExp(opts.match, "i");
+        targets = targets.filter((it) => re.test(it.error ?? ""));
+      }
+      if (targets.length === 0) {
+        console.log("Aucune invitation ne correspond au filtre.");
+        return;
+      }
+      for (const it of targets) {
+        retryInvitation(it);
+        console.log(`✓ ${it.id} (${it.recipientLabel}) → pending`);
+      }
+      console.log(`\n${targets.length} invitation(s) replacée(s) en attente.`);
+    });
+
+  linkedin
+    .command("invite:send")
+    .description("Traiter les invitations en attente (respecte la limite invite journalière et fait des pauses humaines)")
+    .option("-n, --count <n>", "nombre max d'invitations à envoyer cette session", (v) => parseInt(v, 10))
+    .option("--dry-run", "ne pas envoyer, juste afficher le plan")
+    .action(async (opts: { count?: number; dryRun?: boolean }) => {
+      const pending = listInvitations(["pending"]);
+      if (pending.length === 0) {
+        console.log("Aucune invitation en attente.");
+        return;
+      }
+      const limits = getDailyLimits();
+      const todayCount = getTodayCount("invite");
+      const remainingToday = Math.max(0, limits.invite - todayCount);
+      const targetCount = Math.min(opts.count ?? Infinity, remainingToday, pending.length);
+
+      console.log(`Pending: ${pending.length} | Invite aujourd'hui: ${todayCount}/${limits.invite} | Capacité restante: ${remainingToday} | Cette session: ${targetCount}`);
+      if (targetCount === 0) {
+        console.log("Rien à traiter (limite atteinte ou count=0).");
+        return;
+      }
+      if (opts.dryRun) {
+        console.log("\n[dry-run] Invitations qui seraient envoyées:");
+        for (const inv of pending.slice(0, targetCount)) {
+          console.log(`  ${inv.id} | ${inv.recipientLabel} | ${inv.note ? formatMessagePreview(inv.note, 60) : "sans note"}`);
+        }
+        return;
+      }
+
+      let sent = 0;
+      let alreadyConnected = 0;
+      let alreadyPending = 0;
+      let failed = 0;
+
+      await withProvider(async (p) => {
+        for (const inv of pending.slice(0, targetCount)) {
+          console.log(`\n[${sent + alreadyConnected + alreadyPending + failed + 1}/${targetCount}] ${inv.id} → ${inv.recipientLabel}`);
+          if (inv.note) console.log(`  Note: ${formatMessagePreview(inv.note, 80)}`);
+          try {
+            const inviteOpts: { note?: string } = {};
+            if (inv.note) inviteOpts.note = inv.note;
+            const result = await p.sendConnectionInvite(inv.recipient, inviteOpts);
+            if (result.status === "sent") {
+              const status = await p.getProfileStatus(inv.recipient);
+              const sentOpts: Parameters<typeof markInvitationSent>[1] = {};
+              if (status.profileUrn) sentOpts.recipientUrn = status.profileUrn;
+              markInvitationSent(inv, sentOpts);
+              console.log(`  ✓ envoyée${result.viaMoreMenu ? " (via menu Plus)" : ""}${result.withNote ? " avec note" : " sans note"}`);
+              sent++;
+            } else if (result.status === "already-pending") {
+              markInvitationSent(inv);
+              console.log(`  ↺ déjà en attente côté LinkedIn, marquée sent`);
+              alreadyPending++;
+            } else if (result.status === "already-connected") {
+              markInvitationAccepted(inv);
+              console.log(`  ↺ déjà en 1ère relation, marquée accepted`);
+              alreadyConnected++;
+            } else {
+              markInvitationFailed(inv, result.reason ?? `status=${result.status}`);
+              console.error(`  ✗ échec: ${result.reason ?? result.status}`);
+              failed++;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            markInvitationFailed(inv, msg);
+            console.error(`  ✗ échec: ${msg}`);
+            failed++;
+            if (err instanceof RateLimitHitError) {
+              console.error(`RateLimitHitError détecté. Arrêt immédiat.`);
+              break;
+            }
+          }
+          if (sent + alreadyConnected + alreadyPending + failed < targetCount) {
+            await humanPause("invite");
+          }
+        }
+      });
+
+      console.log(`\nBilan: ${sent} envoyée(s), ${alreadyPending} déjà en attente, ${alreadyConnected} déjà connectée(s), ${failed} échec(s).`);
+    });
+
+  linkedin
+    .command("invite:check")
+    .description("Re-vérifier l'état des invitations en `sent`. Si la cible est passée 1ère relation, l'invitation passe en `accepted`. Pause humaine entre chaque profil.")
+    .option("-n, --count <n>", "nombre max d'invitations à vérifier cette session", (v) => parseInt(v, 10))
+    .action(async (opts: { count?: number }) => {
+      const sent = listInvitations(["sent"]);
+      if (sent.length === 0) {
+        console.log("Aucune invitation en attente de réponse.");
+        return;
+      }
+      const targetCount = Math.min(opts.count ?? Infinity, sent.length);
+      console.log(`En attente: ${sent.length} | Cette session: ${targetCount}`);
+
+      let accepted = 0;
+      let stillPending = 0;
+      let errors = 0;
+
+      await withProvider(async (p) => {
+        for (const inv of sent.slice(0, targetCount)) {
+          console.log(`\n[${accepted + stillPending + errors + 1}/${targetCount}] ${inv.id} → ${inv.recipientLabel}`);
+          try {
+            const status = await p.getProfileStatus(inv.recipient);
+            if (status.degree === "1st") {
+              markInvitationAccepted(inv);
+              console.log(`  ✓ acceptée (1ère relation)`);
+              accepted++;
+            } else {
+              console.log(`  · toujours ${status.degree}${status.invitationPending ? " (invitation toujours en attente)" : " (pas de pending visible)"}`);
+              stillPending++;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`  ✗ erreur: ${msg}`);
+            errors++;
+          }
+          if (accepted + stillPending + errors < targetCount) {
+            await humanPause("profile_view");
+          }
+        }
+      });
+
+      console.log(`\nBilan: ${accepted} acceptée(s), ${stillPending} toujours en attente, ${errors} erreur(s).`);
     });
 
   linkedin
