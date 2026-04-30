@@ -98,6 +98,24 @@ export async function resolveTarget(
 
   const degree = mapDegreeText(identity.degreeText);
 
+  // Court-circuit: si la cible n'est pas en 1ère relation, inutile de charger
+  // le compose URL pour résoudre un thread préexistant. LinkedIn refusera
+  // l'envoi gratuit (upsell Premium) et le pre-flight de outbox:send va
+  // skip de toute façon. Économise une navigation par item `waiting`. Pour
+  // `unknown`, on continue (safety: extraction échouée, peut-être 1st).
+  if (degree === "2nd" || degree === "3rd" || degree === "out-of-network") {
+    const target: ResolvedTarget = {
+      threadId: null,
+      threadUrl: null,
+      recipientProfileUrn: identity.profileUrn,
+      recipientProfileUrl: profileUrl,
+      composeUrl: `https://www.linkedin.com/messaging/compose/?recipient=${identity.profileUrn}`,
+      recipientDegree: degree,
+    };
+    if (identity.displayName) target.recipientDisplayName = identity.displayName;
+    return target;
+  }
+
   const existing = await tryResolveExistingThreadViaMessageOverlay(
     page,
     identity.profileUrn,
