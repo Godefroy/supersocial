@@ -71,20 +71,38 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
       })();
       const scope: HTMLElement | Document = topcardEl ?? document;
 
-      // Degré: dans le nouveau LinkedIn React UI, le badge est encodé dans
-      // l'aria-label des entity-lockups (ex: "Yan Berdin Profil Vérifié 2e"
-      // ou "Pierre Dupont 1er"). Cet aria-label apparaît typiquement dans la
-      // section activity (auteurs de ses posts) plutôt que dans le Topcard,
-      // donc on cherche au document scope (pas dans `scope` Topcard).
+      // Degré: signal le plus rapide à charger c'est le `<p>· 2e</p>` (ou
+      // "· 1er", "· 3e+") rendu directement dans le Topcard juste avant le
+      // headline. LinkedIn rend en HTML brut TOUTES les variantes (1er, 2e,
+      // 3e+) côte à côte et n'en affiche qu'une via CSS, donc on filtre
+      // sur la visibilité réelle. Les fallbacks (aria-label des entity-
+      // lockups, .dist-value, .visually-hidden) restent pour les cas où
+      // le Topcard n'expose pas ce pattern (vieux layout, A/B test).
       const degreeText = (() => {
+        const isVisible = (el: HTMLElement): boolean => {
+          const cv = (el as unknown as { checkVisibility?: () => boolean }).checkVisibility;
+          if (typeof cv === "function") return cv.call(el);
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        if (topcardEl) {
+          const ps = Array.from(topcardEl.querySelectorAll<HTMLElement>("p, span"));
+          for (const p of ps) {
+            if (!isVisible(p)) continue;
+            const t = (p.innerText ?? "").trim();
+            const m = t.match(/^[·•]\s*(1er|1ère|2e|3e\+?|2nd|3rd)$/i);
+            if (m?.[1]) return m[1].toLowerCase();
+          }
+        }
         const nameTrim = (name ?? "").trim();
-        if (!nameTrim) return "";
-        const ariaElements = Array.from(document.querySelectorAll<HTMLElement>("[aria-label]"));
-        for (const el of ariaElements) {
-          const aria = (el.getAttribute("aria-label") ?? "").trim();
-          if (!aria.startsWith(nameTrim)) continue;
-          const m = aria.match(/(?:^|\s)(1er|1ère|2e|3e\+?|2nd|3rd)\s*$/i);
-          if (m?.[1]) return m[1].toLowerCase();
+        if (nameTrim) {
+          const ariaElements = Array.from(document.querySelectorAll<HTMLElement>("[aria-label]"));
+          for (const el of ariaElements) {
+            const aria = (el.getAttribute("aria-label") ?? "").trim();
+            if (!aria.startsWith(nameTrim)) continue;
+            const m = aria.match(/(?:^|\s)(1er|1ère|2e|3e\+?|2nd|3rd)\s*$/i);
+            if (m?.[1]) return m[1].toLowerCase();
+          }
         }
         // Fallback ancien layout: badge .dist-value
         const oldBadges = Array.from(

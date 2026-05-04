@@ -324,12 +324,37 @@ async function extractProfileIdentity(page: Page): Promise<ProfileIdentity> {
         displayName = m?.[1]?.trim() ?? null;
       }
 
-      // Degré: scan tous les aria-labels qui commencent par le nom de la
-      // cible et finissent par un degré reconnaissable. Cf. doc dans
+      // Degré: priorité au `<p>· 2e</p>` rendu dans le Topcard (signal qui
+      // charge tout de suite avec le nom). Fallback sur le scan d'aria-labels
+      // qui dépend de la section activity (lazy-load). Cf. doc dans
       // pages/profile.ts (même logique).
+      const topcardEl: HTMLElement | null = (() => {
+        const all = Array.from(document.querySelectorAll<HTMLElement>("[componentkey]"));
+        return (
+          all.find((el) =>
+            (el.getAttribute("componentkey") ?? "").startsWith("com.linkedin.sdui.profile.card.ref") &&
+            (el.getAttribute("componentkey") ?? "").endsWith("Topcard"),
+          ) ?? null
+        );
+      })();
+      const isVisible = (el: HTMLElement): boolean => {
+        const cv = (el as unknown as { checkVisibility?: () => boolean }).checkVisibility;
+        if (typeof cv === "function") return cv.call(el);
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
       let degreeText = "";
+      if (topcardEl) {
+        const ps = Array.from(topcardEl.querySelectorAll<HTMLElement>("p, span"));
+        for (const p of ps) {
+          if (!isVisible(p)) continue;
+          const t = (p.innerText ?? "").trim();
+          const m = t.match(/^[·•]\s*(1er|1ère|2e|3e\+?|2nd|3rd)$/i);
+          if (m?.[1]) { degreeText = m[1].toLowerCase(); break; }
+        }
+      }
       const nameTrim = (displayName ?? "").trim();
-      if (nameTrim) {
+      if (!degreeText && nameTrim) {
         const ariaElements = Array.from(document.querySelectorAll<HTMLElement>("[aria-label]"));
         for (const el of ariaElements) {
           const aria = (el.getAttribute("aria-label") ?? "").trim();
