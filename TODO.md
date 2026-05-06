@@ -47,6 +47,7 @@ Infra :
 - [x] Workflow chaîné `invite → wait → dm`: `invite:add --then-dm <body>` queue invitation + DM atomiquement. `outbox:send` skip les DMs dont la cible n'est pas 1ère relation (statut `waiting`, reste en pending sans humanPause). Cron `invite:check` marque acceptée → cron `outbox:send` suivant fire le DM.
 - [x] Pre-flight degré dans `outbox:send` (jamais DM si non-1ère relation, partage cache profil avec `readConversation`)
 - [x] Cron entries pour `invite:send` (2x/jour) et `invite:check` (1x/jour)
+- [x] Expiration des invitations non acceptées : `invite:check` plafonne à 10 vérifications max (1x/20h), au-delà passe en `failed` et cascade les DM `pending` adressés à la même URL en `failed`. `outbox:send` applique le même compteur côté pre-flight degré (10 essais waiting max). Constantes en haut de `invitations.ts` et `outbox.ts`.
 - [ ] `linkedin comment <postId> <body>` : poster un commentaire
 - [ ] `linkedin publish <body>` : publier un post
 

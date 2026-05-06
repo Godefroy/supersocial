@@ -84,6 +84,8 @@ Symétrique à l'outbox DM. Les invitations sont stockées en markdown dans `dat
 
 `outbox:send` applique un pre-flight de degré de relation: les items dont la cible n'est pas 1ère relation restent en pending sans humanPause (statut `waiting`). Combiné avec `invite:check` en cron, ça permet le workflow: `invite:add <url> --then-dm <body>` queue l'invitation et le DM. Le cron `invite:send` envoie l'invitation. Le cron `invite:check` re-vérifie chaque jour et marque acceptée quand la cible passe 1ère relation. Au cron `outbox:send` suivant, le DM trouve la cible en 1ère relation et part automatiquement.
 
+Au bout de 10 vérifications sans acceptation, l'invitation passe en `failed` ("non acceptée après 10 vérifications") et le DM `pending` adressé à la même URL est cascadé en `failed`. `invite:retry` ou `outbox:retry` réinitialisent les compteurs si l'utilisateur veut reprendre.
+
 ## Gestion d'erreur
 
 Si une commande affiche `RateLimitHitError`, arrêter immédiatement toute commande LinkedIn et prévenir l'utilisateur. Ne pas réessayer.

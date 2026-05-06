@@ -20,6 +20,10 @@ import {
   markOutboxFailed,
   cancelOutboxItem,
   retryOutboxItem,
+  recordOutboxCheckAttempt,
+  findPendingOutboxItemsByRecipient,
+  MAX_OUTBOX_WAITING_CHECKS,
+  MIN_HOURS_BETWEEN_OUTBOX_CHECKS,
   type OutboxItem,
   type OutboxStatus,
 } from "../providers/linkedin/outbox.js";
@@ -33,6 +37,9 @@ import {
   cancelInvitation,
   retryInvitation,
   recordDirectInvitation,
+  recordInvitationCheckAttempt,
+  MAX_INVITATION_CHECKS,
+  MIN_HOURS_BETWEEN_INVITATION_CHECKS,
   type Invitation,
   type InvitationStatus,
 } from "../providers/linkedin/invitations.js";
@@ -397,14 +404,39 @@ export function registerLinkedInCommands(program: Command): void {
           console.log(`\n[${sent + failed + skipped + waitingNotConnected + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
           console.log(`  ${formatMessagePreview(item.body, 100)}`);
           try {
+            // Skip pré-page-load: si on a déjà constaté un degré non-1st il y
+            // a moins de N heures, inutile de recharger LinkedIn maintenant.
+            // Économise des chargements de profil pour les cibles qui ne
+            // bougeront pas dans la journée.
+            const lastCheckMs = item.lastCheckAt ? new Date(item.lastCheckAt).getTime() : 0;
+            const minCheckMs = MIN_HOURS_BETWEEN_OUTBOX_CHECKS * 3600 * 1000;
+            if (item.lastCheckAt && (item.checkAttempts ?? 0) > 0 && Date.now() - lastCheckMs < minCheckMs) {
+              console.log(
+                `  ⏸ skip (waiting): déjà vérifié il y a moins de ${MIN_HOURS_BETWEEN_OUTBOX_CHECKS}h, cible non-1st (essai ${item.checkAttempts}/${MAX_OUTBOX_WAITING_CHECKS}). Pas de chargement de page.`,
+              );
+              waitingNotConnected++;
+              continue;
+            }
+
             // Pre-flight: ne JAMAIS DM si la cible n'est pas en 1ère relation.
             // LinkedIn refusera et affichera l'upsell Premium. La résolution
             // charge le profil une seule fois (cache provider), donc le coût
             // est partagé avec le `readConversation` qui suit.
             const target = await p.resolveTargetForInput(item.recipient);
             if (target.recipientDegree && target.recipientDegree !== "1st") {
+              const newAttempts = (item.checkAttempts ?? 0) + 1;
+              if (newAttempts >= MAX_OUTBOX_WAITING_CHECKS) {
+                markOutboxFailed(
+                  item,
+                  `cible jamais passée en 1ère relation après ${MAX_OUTBOX_WAITING_CHECKS} vérifications (degré=${target.recipientDegree})`,
+                );
+                console.log(`  ✗ failed (cible toujours ${target.recipientDegree} après ${MAX_OUTBOX_WAITING_CHECKS} essais)`);
+                failed++;
+                continue;
+              }
+              recordOutboxCheckAttempt(item);
               console.log(
-                `  ⏸ skip (waiting): pas en 1ère relation (degré=${target.recipientDegree}). Item reste en pending; envoie une demande de connexion via \`linkedin connect ${item.recipient}\` ou attends qu'elle soit acceptée.`,
+                `  ⏸ skip (waiting): pas en 1ère relation (degré=${target.recipientDegree}, essai ${newAttempts}/${MAX_OUTBOX_WAITING_CHECKS}). Item reste en pending; envoie une demande de connexion via \`linkedin connect ${item.recipient}\` ou attends qu'elle soit acceptée.`,
               );
               waitingNotConnected++;
               continue;
@@ -754,7 +786,7 @@ export function registerLinkedInCommands(program: Command): void {
 
   linkedin
     .command("invite:check")
-    .description("Re-vérifier l'état des invitations en `sent`. Si la cible est passée 1ère relation, l'invitation passe en `accepted`. Pause humaine entre chaque profil.")
+    .description(`Re-vérifier l'état des invitations en \`sent\`. Si la cible est passée 1ère relation, l'invitation passe en \`accepted\`. Au-delà de ${MAX_INVITATION_CHECKS} vérifications, l'invitation passe en \`failed\` et les DM associés (même URL) sont cascadés en \`failed\` sans page load. Saute les invitations vérifiées il y a moins de ${MIN_HOURS_BETWEEN_INVITATION_CHECKS}h.`)
     .option("-n, --count <n>", "nombre max d'invitations à vérifier cette session", (v) => parseInt(v, 10))
     .action(async (opts: { count?: number }) => {
       const sent = listInvitations(["sent"]);
@@ -762,23 +794,66 @@ export function registerLinkedInCommands(program: Command): void {
         console.log("Aucune invitation en attente de réponse.");
         return;
       }
-      const targetCount = Math.min(opts.count ?? Infinity, sent.length);
-      console.log(`En attente: ${sent.length} | Cette session: ${targetCount}`);
+      const now = Date.now();
+      const minMs = MIN_HOURS_BETWEEN_INVITATION_CHECKS * 3600 * 1000;
+
+      // 1) Expirations sans page load: compteur déjà au max → failed + cascade.
+      const expired = sent.filter((inv) => (inv.checkAttempts ?? 0) >= MAX_INVITATION_CHECKS);
+      let cascadedDms = 0;
+      for (const inv of expired) {
+        markInvitationFailed(inv, `non acceptée après ${MAX_INVITATION_CHECKS} vérifications`);
+        const dms = findPendingOutboxItemsByRecipient(inv.recipient);
+        for (const dm of dms) {
+          markOutboxFailed(dm, `invitation associée non acceptée (${inv.id})`);
+          cascadedDms++;
+        }
+        console.log(`✗ ${inv.id} (${inv.recipientLabel}) → failed (compteur au max)${dms.length > 0 ? ` + ${dms.length} DM cascadé(s)` : ""}`);
+      }
+
+      // 2) Éligibles: compteur < max ET pas vérifié dans les dernières N heures.
+      const eligible = sent.filter(
+        (inv) =>
+          (inv.checkAttempts ?? 0) < MAX_INVITATION_CHECKS &&
+          (!inv.lastCheckAt || now - new Date(inv.lastCheckAt).getTime() >= minMs),
+      );
+      const skippedRecent = sent.length - expired.length - eligible.length;
+      if (skippedRecent > 0) {
+        console.log(`⏸ ${skippedRecent} invitation(s) sautée(s) (vérifiée(s) il y a moins de ${MIN_HOURS_BETWEEN_INVITATION_CHECKS}h)`);
+      }
+      if (eligible.length === 0) {
+        console.log(expired.length > 0 ? `\nBilan: 0 acceptée(s), 0 toujours en attente, ${expired.length} expirée(s), ${cascadedDms} DM cascadé(s), 0 erreur(s).` : "Rien à vérifier.");
+        return;
+      }
+
+      const targetCount = Math.min(opts.count ?? Infinity, eligible.length);
+      console.log(`À vérifier: ${eligible.length} | Cette session: ${targetCount}`);
 
       let accepted = 0;
       let stillPending = 0;
+      let nowFailed = 0;
       let errors = 0;
 
       await withProvider(async (p) => {
-        for (const inv of sent.slice(0, targetCount)) {
-          console.log(`\n[${accepted + stillPending + errors + 1}/${targetCount}] ${inv.id} → ${inv.recipientLabel}`);
+        for (const inv of eligible.slice(0, targetCount)) {
+          const attempt = (inv.checkAttempts ?? 0) + 1;
+          console.log(`\n[${accepted + stillPending + nowFailed + errors + 1}/${targetCount}] ${inv.id} → ${inv.recipientLabel} (essai ${attempt}/${MAX_INVITATION_CHECKS})`);
           try {
             const status = await p.getProfileStatus(inv.recipient);
             if (status.degree === "1st") {
               markInvitationAccepted(inv);
               console.log(`  ✓ acceptée (1ère relation)`);
               accepted++;
+            } else if (attempt >= MAX_INVITATION_CHECKS) {
+              markInvitationFailed(inv, `non acceptée après ${MAX_INVITATION_CHECKS} vérifications`);
+              const dms = findPendingOutboxItemsByRecipient(inv.recipient);
+              for (const dm of dms) {
+                markOutboxFailed(dm, `invitation associée non acceptée (${inv.id})`);
+                cascadedDms++;
+              }
+              console.log(`  ✗ failed (atteint ${MAX_INVITATION_CHECKS} essais)${dms.length > 0 ? ` + ${dms.length} DM cascadé(s)` : ""}`);
+              nowFailed++;
             } else {
+              recordInvitationCheckAttempt(inv);
               console.log(`  · toujours ${status.degree}${status.invitationPending ? " (invitation toujours en attente)" : " (pas de pending visible)"}`);
               stillPending++;
             }
@@ -787,13 +862,13 @@ export function registerLinkedInCommands(program: Command): void {
             console.error(`  ✗ erreur: ${msg}`);
             errors++;
           }
-          if (accepted + stillPending + errors < targetCount) {
+          if (accepted + stillPending + nowFailed + errors < targetCount) {
             await humanPause("profile_view");
           }
         }
       });
 
-      console.log(`\nBilan: ${accepted} acceptée(s), ${stillPending} toujours en attente, ${errors} erreur(s).`);
+      console.log(`\nBilan: ${accepted} acceptée(s), ${stillPending} toujours en attente, ${expired.length + nowFailed} expirée(s), ${cascadedDms} DM cascadé(s), ${errors} erreur(s).`);
     });
 
   linkedin

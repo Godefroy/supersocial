@@ -43,6 +43,8 @@ File d'invitations : `linkedin invite:add` empile, `linkedin invite:send -n N` t
 
 Workflow chaîné invite → DM : `linkedin invite:add <url> --note "..." --then-dm "..."` queue à la fois une invitation et un DM. Le DM partira automatiquement quand la cible passera en 1ère relation, grâce au pre-flight de degré dans `outbox:send` qui skip (statut `waiting`) tant que la cible n'est pas connectée. Le cron `invite:check` (1x/jour) marque les invitations acceptées; le cron `outbox:send` (3x/jour) re-tente les DMs et fire ceux dont la cible est passée 1ère relation.
 
+Expiration automatique : chaque invitation `sent` et chaque item outbox en attente de 1ère relation porte un compteur `check_attempts` et un timestamp `last_check_at`. `invite:check` plafonne à 10 vérifications par invitation (max 1 par 20h), au-delà l'invitation passe en `failed` ("non acceptée après 10 vérifications") et les DM `pending` adressés à la même URL sont cascadés en `failed` sans recharger la page profil. `outbox:send` applique la même logique côté DM via le pre-flight de degré : 10 essais max où la cible reste non-1st, puis `failed`. Constantes ajustables en haut de `src/providers/linkedin/invitations.ts` et `outbox.ts`. `invite:retry` et `outbox:retry` réinitialisent les compteurs.
+
 Mode debug: `SUPERSOCIAL_DEBUG=true` sur n'importe quelle commande pour logs détaillés. `SUPERSOCIAL_STEALTH=false` pour désactiver le stealth plugin.
 
 ## Cron

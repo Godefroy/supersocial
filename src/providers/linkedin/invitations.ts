@@ -3,6 +3,11 @@ import { join, basename } from "node:path";
 import { slugify, writeMarkdown, readMarkdown } from "../../core/storage.js";
 import { linkedinPaths } from "./storage.js";
 
+/** Nombre maximum de vérifications d'acceptation d'une invitation `sent`. Au-delà, l'invitation passe en `failed`. */
+export const MAX_INVITATION_CHECKS = 10;
+/** Délai minimum (en heures) entre deux vérifications de la même invitation. Évite de recharger le profil plusieurs fois par jour. */
+export const MIN_HOURS_BETWEEN_INVITATION_CHECKS = 20;
+
 export type InvitationStatus = "pending" | "sent" | "accepted" | "failed";
 
 export interface Invitation {
@@ -20,6 +25,10 @@ export interface Invitation {
   sentAt?: string;
   acceptedAt?: string;
   error?: string;
+  /** Nombre de fois où on a re-vérifié l'état d'acceptation (incrémenté par `invite:check`). */
+  checkAttempts?: number;
+  /** Date ISO du dernier check d'acceptation. */
+  lastCheckAt?: string;
   file: string;
 }
 
@@ -35,6 +44,8 @@ interface InvitationFrontmatter extends Record<string, unknown> {
   sent_at?: string | null;
   accepted_at?: string | null;
   error?: string | null;
+  check_attempts?: number | null;
+  last_check_at?: string | null;
 }
 
 function ensureDirs(): void {
@@ -124,6 +135,8 @@ function parseItem(file: string, status: InvitationStatus): Invitation | null {
   if (fm.sent_at) item.sentAt = String(fm.sent_at);
   if (fm.accepted_at) item.acceptedAt = String(fm.accepted_at);
   if (fm.error) item.error = String(fm.error);
+  if (typeof fm.check_attempts === "number") item.checkAttempts = fm.check_attempts;
+  if (fm.last_check_at) item.lastCheckAt = String(fm.last_check_at);
   return item;
 }
 
@@ -212,11 +225,29 @@ export function markInvitationFailed(item: Invitation, error: string): string {
   });
 }
 
+/**
+ * Incrémente le compteur de vérifications d'acceptation et met à jour le
+ * timestamp du dernier check. Reste en `sent`. Appelé par `invite:check`
+ * quand la cible n'est toujours pas en 1ère relation.
+ */
+export function recordInvitationCheckAttempt(item: Invitation): string {
+  const next = (item.checkAttempts ?? 0) + 1;
+  return moveItem(item, "sent", {
+    check_attempts: next,
+    last_check_at: new Date().toISOString(),
+  });
+}
+
 export function retryInvitation(item: Invitation): string {
   if (item.status !== "failed") {
     throw new Error(`L'invitation ${item.id} n'est pas en échec (status: ${item.status}).`);
   }
-  return moveItem(item, "pending", { error: null, sent_at: null });
+  return moveItem(item, "pending", {
+    error: null,
+    sent_at: null,
+    check_attempts: null,
+    last_check_at: null,
+  });
 }
 
 export function cancelInvitation(id: string): Invitation | null {

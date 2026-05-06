@@ -3,6 +3,11 @@ import { join, basename } from "node:path";
 import { slugify, writeMarkdown, readMarkdown } from "../../core/storage.js";
 import { linkedinPaths } from "./storage.js";
 
+/** Nombre maximum de pre-flights où la cible n'est pas en 1ère relation. Au-delà, l'item passe en `failed`. */
+export const MAX_OUTBOX_WAITING_CHECKS = 10;
+/** Délai minimum (en heures) entre deux pre-flights de la même cible. Évite de recharger le profil à chaque créneau d'`outbox:send`. */
+export const MIN_HOURS_BETWEEN_OUTBOX_CHECKS = 20;
+
 export type OutboxStatus = "pending" | "sent" | "failed";
 
 export interface OutboxItem {
@@ -15,6 +20,10 @@ export interface OutboxItem {
   threadId?: string;
   error?: string;
   note?: string;
+  /** Nombre de pre-flights où la cible n'était pas en 1ère relation (incrémenté par `outbox:send`). */
+  checkAttempts?: number;
+  /** Date ISO du dernier pre-flight ayant constaté un degré non-1st. */
+  lastCheckAt?: string;
   status: OutboxStatus;
   file: string;
 }
@@ -31,6 +40,8 @@ interface OutboxFrontmatter extends Record<string, unknown> {
   thread_id?: string | null;
   error?: string | null;
   note?: string | null;
+  check_attempts?: number | null;
+  last_check_at?: string | null;
 }
 
 function ensureDirs(): void {
@@ -120,6 +131,8 @@ function parseItem(file: string, status: OutboxStatus): OutboxItem | null {
   if (fm.thread_id) item.threadId = String(fm.thread_id);
   if (fm.error) item.error = String(fm.error);
   if (fm.note) item.note = String(fm.note);
+  if (typeof fm.check_attempts === "number") item.checkAttempts = fm.check_attempts;
+  if (fm.last_check_at) item.lastCheckAt = String(fm.last_check_at);
   return item;
 }
 
@@ -188,11 +201,38 @@ export function markOutboxFailed(item: OutboxItem, error: string): string {
   });
 }
 
+/**
+ * Incrémente le compteur de pre-flights ayant constaté un degré non-1st et
+ * met à jour le timestamp. Reste en `pending`. Appelé par `outbox:send` quand
+ * la cible n'est toujours pas en 1ère relation.
+ */
+export function recordOutboxCheckAttempt(item: OutboxItem): string {
+  const next = (item.checkAttempts ?? 0) + 1;
+  return moveItem(item, "pending", {
+    check_attempts: next,
+    last_check_at: new Date().toISOString(),
+  });
+}
+
+/**
+ * Retourne tous les items `pending` adressés à la même URL recipient.
+ * Sert à cascader le `failed` d'une invitation expirée sur les DM associés
+ * (workflow `invite:add --then-dm` qui partage l'URL profil).
+ */
+export function findPendingOutboxItemsByRecipient(recipient: string): OutboxItem[] {
+  return listOutboxItems(["pending"]).filter((it) => it.recipient === recipient);
+}
+
 export function retryOutboxItem(item: OutboxItem): string {
   if (item.status !== "failed") {
     throw new Error(`L'item ${item.id} n'est pas en échec (status: ${item.status}).`);
   }
-  return moveItem(item, "pending", { error: null, sent_at: null });
+  return moveItem(item, "pending", {
+    error: null,
+    sent_at: null,
+    check_attempts: null,
+    last_check_at: null,
+  });
 }
 
 export function cancelOutboxItem(id: string): OutboxItem | null {
