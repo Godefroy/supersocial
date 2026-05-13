@@ -22,7 +22,7 @@ export const config: Config = {
   timezone: process.env.SUPERSOCIAL_TIMEZONE ?? "Europe/Paris",
   throttleProfile: (process.env.SUPERSOCIAL_THROTTLE_PROFILE as ThrottleProfile) ?? "conservative",
   chromeProfileDir: resolve(projectRoot, process.env.SUPERSOCIAL_CHROME_PROFILE_DIR ?? ".chrome-profile"),
-  headless: process.env.SUPERSOCIAL_HEADLESS === "true",
+  headless: process.env.SUPERSOCIAL_HEADLESS !== "false",
   dataDir: resolve(projectRoot, "data"),
   stateDir: resolve(projectRoot, "data", ".state"),
 };

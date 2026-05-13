@@ -17,6 +17,7 @@ import {
   attachKillSwitch,
   assertKillSwitchOk,
   checkPageForRedFlags,
+  LoginRequiredError,
   type KillSwitchState,
 } from "../../core/throttle.js";
 import { checkAndRecord } from "../../core/throttle-state.js";
@@ -47,17 +48,15 @@ export class LinkedInProvider implements SocialProvider {
   /** URL thread actuellement chargée, pour skip `openAndLoadThread` si déjà sur place. */
   private loadedThreadUrl: string | null = null;
 
-  async ensureContext(): Promise<BrowserContext> {
-    if (!this.context) this.context = await launchPersistentChrome();
+  async ensureContext(opts: { headless?: boolean } = {}): Promise<BrowserContext> {
+    if (!this.context) this.context = await launchPersistentChrome(opts);
     return this.context;
   }
 
   private async ensurePage(): Promise<Page> {
     const context = await this.ensureContext();
     if (!(await hasLinkedInSession(context))) {
-      throw new Error(
-        "Pas de session LinkedIn dans le profil Chrome. Lance d'abord: npm run dev -- linkedin login",
-      );
+      throw new LoginRequiredError("aucun cookie li_at dans le profil Chrome");
     }
     const pages = context.pages();
     const page = pages[0] ?? (await context.newPage());
@@ -66,7 +65,7 @@ export class LinkedInProvider implements SocialProvider {
   }
 
   async login(): Promise<void> {
-    const context = await this.ensureContext();
+    const context = await this.ensureContext({ headless: false });
     await runLinkedInLogin(context);
   }
 

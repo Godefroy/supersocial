@@ -29,6 +29,7 @@ Infra :
 - Détection de DM refusé via `card-upsell-v2__headline` (upsell Premium): fast-fail en 3-5s avec `LinkedInDmRestrictedError`, break du batch outbox
 - Résolution URL profil → thread ID via dérivation base64 depuis les `data-event-urn` (décoder, prendre la partie après `&`, réencoder avec préfixe `2-`). Évite la recherche inbox, gère homonymes et threads anciens
 - Détection outgoing par comparaison URN sender (data-event-urn) ∉ participants "autres" (où self est filtré par nom depuis l'alt de `.global-nav__me-photo`)
+- Headless par défaut (mode "new" de Playwright + stealth) sauf `linkedin login`. Sur redirect `/login` ou `/checkpoint/`, le CLI lève `LoginRequiredError`, notifie macOS et ouvre auto une fenêtre Chrome headful pour résoudre la session
 
 ## À faire
 

@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { Post } from "../../../core/provider.js";
 import { loadAndExtractPosts } from "../page-ops.js";
+import { LoginRequiredError } from "../../../core/throttle.js";
 
 const CONTENT_SEARCH_URL = "https://www.linkedin.com/search/results/content/";
 
@@ -21,7 +22,7 @@ export async function searchPostsOnPage(
   await page.goto(buildSearchUrl(query, opts.dateRange), { waitUntil: "domcontentloaded" });
 
   if (page.url().includes("/login") || page.url().includes("/checkpoint/")) {
-    throw new Error(`Redirigé vers ${page.url()}. Session LinkedIn expirée, relance \`linkedin login\`.`);
+    throw new LoginRequiredError(`redirigé vers ${page.url()}`, page.url());
   }
 
   const posts = await loadAndExtractPosts(page, {

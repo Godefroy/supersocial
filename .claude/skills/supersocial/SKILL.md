@@ -92,7 +92,7 @@ Si une commande affiche `RateLimitHitError`, arrêter immédiatement toute comma
 
 Si `LinkedInDmRestrictedError` (DM refusé, upsell Premium affiché), arrêter le batch outbox et prévenir l'utilisateur. La cible n'est probablement pas en 1ère relation, ou un burst récent a déclenché une restriction temporaire. Proposer `linkedin connect <url>` pour envoyer une invitation d'abord, puis DM seulement après acceptation.
 
-Si `Cookies LinkedIn manquants` ou `Pas de session LinkedIn dans le profil Chrome`, lancer `npm run dev -- linkedin login` pour connecter le profil Chrome persistant.
+Si `LoginRequiredError` (session expirée, redirect `/login` ou `/checkpoint/`, cookie `li_at` manquant), le CLI ouvre auto une fenêtre Chrome de login et envoie une notif macOS. Prévenir l'utilisateur que la fenêtre Chrome attend sa connexion. Une fois la session restaurée par l'utilisateur, relancer la commande qui avait échoué.
 
 Si `ThrottleLimitError`, la limite journalière pour cette action est atteinte. Prévenir l'utilisateur et attendre le lendemain, ou lui proposer de consulter `linkedin throttle:status`.
 

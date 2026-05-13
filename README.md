@@ -11,6 +11,8 @@ npm run dev -- linkedin login
 
 La commande `login` ouvre Chrome avec un profil persistant, tu te connectes à LinkedIn à la main, les cookies sont sauvés dans `.chrome-profile/`. Tu ne referas ce login qu'à expiration de session (~1 an pour `li_at`).
 
+Par défaut, toutes les autres commandes tournent en headless (Chrome ne s'affiche pas). Seule `linkedin login` ouvre une fenêtre visible. Quand LinkedIn redirige une commande vers `/login` ou `/checkpoint/` (session expirée, captcha, vérification d'identité), le CLI lève `LoginRequiredError`, déclenche une notification macOS, et relance automatiquement une session Chrome headful pour que tu résoudes le challenge. Une fois la session restaurée, relance la commande précédente. Pour forcer le headful sur toutes les commandes (debug visuel), `SUPERSOCIAL_HEADLESS=false`.
+
 ## Utilisation via Claude Code
 
 La skill `.claude/skills/supersocial/SKILL.md` liste les commandes disponibles. Claude l'invoque automatiquement quand tu lui demandes une action LinkedIn (recherche, DM, commentaire, publication, synchro posts).

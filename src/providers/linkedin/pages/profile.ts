@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import type { ConnectionDegree, ProfileStatus, InviteResult } from "../../../core/provider.js";
-import { sleep } from "../../../core/throttle.js";
+import { sleep, LoginRequiredError } from "../../../core/throttle.js";
 import { dumpPageState } from "../../../core/debug.js";
 
 const PROFILE_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/([^/?#]+)/i;
@@ -542,7 +542,7 @@ export async function sendInvite(
 function assertNotBlocked(page: Page): void {
   const u = page.url();
   if (u.includes("/login") || u.includes("/checkpoint/")) {
-    throw new Error(`Redirigé vers ${u}. Session LinkedIn expirée, relance \`linkedin login\`.`);
+    throw new LoginRequiredError(`redirigé vers ${u}`, u);
   }
 }
 

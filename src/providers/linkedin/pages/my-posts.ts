@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { Post } from "../../../core/provider.js";
 import { loadAndExtractPosts } from "../page-ops.js";
+import { LoginRequiredError } from "../../../core/throttle.js";
 
 export interface ListMyPostsOptions {
   limit?: number;
@@ -20,7 +21,7 @@ export async function listMyPostsOnPage(
   await page.goto(url, { waitUntil: "domcontentloaded" });
 
   if (page.url().includes("/login") || page.url().includes("/checkpoint/")) {
-    throw new Error(`Redirigé vers ${page.url()}. Session LinkedIn expirée, relance \`linkedin login\`.`);
+    throw new LoginRequiredError(`redirigé vers ${page.url()}`, page.url());
   }
 
   // Sur recent-activity, chaque post a ~2 boutons aria-label "post de X", donc on

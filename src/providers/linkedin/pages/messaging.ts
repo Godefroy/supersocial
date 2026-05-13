@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import { createHash } from "node:crypto";
 import type { Author, ConnectionDegree, Message } from "../../../core/provider.js";
-import { sleep, LinkedInDmRestrictedError } from "../../../core/throttle.js";
+import { sleep, LinkedInDmRestrictedError, LoginRequiredError } from "../../../core/throttle.js";
 import { safeEval } from "../../../core/extract.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { cleanProfileUrl, extractProfileUrn } from "../profile-url.js";
@@ -430,7 +430,7 @@ function extractRecipientUrnFromComposeUrl(composeUrl: string): string | null {
 function assertNotBlocked(page: Page): void {
   const u = page.url();
   if (u.includes("/login") || u.includes("/checkpoint/")) {
-    throw new Error(`Redirigé vers ${u}. Session LinkedIn expirée, relance \`linkedin login\`.`);
+    throw new LoginRequiredError(`redirigé vers ${u}`, u);
   }
 }
 

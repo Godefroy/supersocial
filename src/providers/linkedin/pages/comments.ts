@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import type { Comment } from "../../../core/provider.js";
-import { sleep, humanPause } from "../../../core/throttle.js";
+import { sleep, humanPause, LoginRequiredError } from "../../../core/throttle.js";
 import { safeEval } from "../../../core/extract.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { cleanProfileUrl, extractProfileUrn } from "../profile-url.js";
@@ -102,7 +102,7 @@ export async function listCommentsOnPage(
   await page.goto(url, { waitUntil: "domcontentloaded" });
 
   if (page.url().includes("/login") || page.url().includes("/checkpoint/")) {
-    throw new Error(`Redirigé vers ${page.url()}. Session LinkedIn expirée, relance \`linkedin login\`.`);
+    throw new LoginRequiredError(`redirigé vers ${page.url()}`, page.url());
   }
 
   await sleep(5000);

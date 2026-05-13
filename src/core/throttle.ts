@@ -106,6 +106,24 @@ export class RateLimitHitError extends Error {
  * absent. À traiter comme un signal "stop le batch", car les autres items
  * non-1ère relation auront le même sort dans la même session.
  */
+/**
+ * Levée quand LinkedIn redirige vers /login ou /checkpoint/ (cookie li_at
+ * expiré, challenge sécurité, captcha). Le CLI catch cette erreur au top-level
+ * pour déclencher une notif macOS et relancer une session headful où
+ * l'utilisateur peut résoudre le challenge.
+ */
+export class LoginRequiredError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly url?: string,
+  ) {
+    super(
+      `Session LinkedIn à renouveler: ${reason}${url ? ` (${url})` : ""}. Une fenêtre Chrome va s'ouvrir pour te reconnecter.`,
+    );
+    this.name = "LoginRequiredError";
+  }
+}
+
 export class LinkedInDmRestrictedError extends Error {
   constructor(
     public readonly recipient: string,
