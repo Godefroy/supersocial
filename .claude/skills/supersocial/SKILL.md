@@ -79,6 +79,8 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 
 `outbox:add` pose un markdown dans `data/linkedin/outbox/pending/`. `outbox:send` traite les items en attente, un par un, avec `humanPause("dm")` entre chaque, et s'arrête sur `RateLimitHitError`. Nombre d'envois plafonné par la capacité journalière restante (`getDailyLimits().dm - getTodayCount("dm")`). Les items envoyés passent dans `sent/`, ceux en erreur dans `failed/`. Pour rejouer des items en échec : `outbox:retry --all` (tout) ou `outbox:retry <id1> <id2>` (sélection), avec `--match <motif>` pour filtrer par regex sur le message d'erreur.
 
+Erreurs transitoires : une erreur d'infra (réseau coupé/changé, navigation, contexte navigateur fermé, timeout) laisse l'item en `pending` au lieu de le passer en `failed`, donc il repart automatiquement au prochain `outbox:send` sans `outbox:retry` manuel. Seules les vraies erreurs (refus LinkedIn, etc.) vont en `failed`.
+
 Avant chaque envoi, `outbox:send` vérifie le thread cible et compare le dernier message sortant au body de l'item. Si match exact, l'item passe direct en `sent/` avec `note: déjà envoyé (dedup match)` sans consommer de quota dm. Sécurise les retries après un faux négatif (ex: compose-no-redirect où le message a été envoyé mais l'exception a été levée).
 
 ## profile:extract et connect

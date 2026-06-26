@@ -77,6 +77,26 @@ async function askYesNo(question: string): Promise<boolean> {
   }
 }
 
+/**
+ * Erreurs d'infrastructure transitoires (réseau coupé/changé, navigation, contexte
+ * navigateur fermé, timeout) qui ne traduisent aucun refus LinkedIn. Rien n'a été
+ * envoyé (elles surviennent au chargement de page), et la dédup de `outbox:send`
+ * couvre le cas limite d'un envoi parti juste avant la coupure. On laisse alors
+ * l'item en pending pour rejouer au prochain run plutôt que de le marquer failed.
+ */
+function isTransientInfraError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes("net::") ||
+    /ERR_(NETWORK|INTERNET|CONNECTION|NAME_NOT_RESOLVED|TIMED_OUT|ABORTED|EMPTY_RESPONSE|SOCKET)/i.test(msg) ||
+    /\btimeout\b|timed out|timeout exceeded/i.test(msg) ||
+    msg.includes("Target closed") ||
+    msg.includes("Target page, context or browser has been closed") ||
+    msg.includes("Execution context was destroyed") ||
+    msg.includes("navigating and changing")
+  );
+}
+
 function printProfileStatus(status: ProfileStatus, fromCache: boolean): void {
   const when = status.fetchedAt ? status.fetchedAt.slice(0, 10) : "?";
   console.log(`URL: ${status.url}`);
@@ -437,10 +457,11 @@ export function registerLinkedInCommands(program: Command): void {
       let failed = 0;
       let skipped = 0;
       let waitingNotConnected = 0;
+      let transient = 0;
       // Un seul browser pour toute la boucle: évite N lancements de Chrome.
       await withProvider(async (p) => {
         for (const item of pending.slice(0, targetCount)) {
-          console.log(`\n[${sent + failed + skipped + waitingNotConnected + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
+          console.log(`\n[${sent + failed + skipped + waitingNotConnected + transient + 1}/${targetCount}] ${item.id} → ${item.recipientLabel}`);
           console.log(`  ${formatMessagePreview(item.body, 100)}`);
           try {
             // Skip pré-page-load: si on a déjà constaté un degré non-1st il y
@@ -512,9 +533,16 @@ export function registerLinkedInCommands(program: Command): void {
             sent++;
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            markOutboxFailed(item, msg);
-            console.error(`  ✗ échec: ${msg}`);
-            failed++;
+            if (isTransientInfraError(err) && !(err instanceof RateLimitHitError)) {
+              // Erreur d'infra transitoire: on laisse l'item en pending pour
+              // rejouer au prochain `outbox:send` (pas de markOutboxFailed).
+              console.error(`  ⚠ erreur transitoire, reste en pending: ${msg}`);
+              transient++;
+            } else {
+              markOutboxFailed(item, msg);
+              console.error(`  ✗ échec: ${msg}`);
+              failed++;
+            }
             if (err instanceof RateLimitHitError) {
               console.error(`RateLimitHitError détecté. Arrêt immédiat de la boîte d'envoi.`);
               break;
@@ -529,13 +557,13 @@ export function registerLinkedInCommands(program: Command): void {
           // humanPause uniquement quand on a effectivement déclenché une
           // action DM (envoyé, dedup-skipped, ou échec). Le `continue` sur
           // waiting saute cette section, donc pas de pause sur ces items.
-          if (sent + failed + skipped + waitingNotConnected < targetCount) {
+          if (sent + failed + skipped + waitingNotConnected + transient < targetCount) {
             await humanPause("dm");
           }
         }
       });
 
-      console.log(`\nBilan: ${sent} envoyé(s), ${skipped} skip(s) dedup, ${waitingNotConnected} waiting (non-1ère relation), ${failed} échec(s), ${pending.length - sent - failed - skipped - waitingNotConnected} restant(s) en attente.`);
+      console.log(`\nBilan: ${sent} envoyé(s), ${skipped} skip(s) dedup, ${waitingNotConnected} waiting (non-1ère relation), ${transient} transitoire(s) (restent pending), ${failed} échec(s), ${pending.length - sent - failed - skipped - waitingNotConnected - transient} restant(s) en attente.`);
     });
 
   linkedin
