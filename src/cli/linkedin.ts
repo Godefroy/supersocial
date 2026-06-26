@@ -3,6 +3,7 @@ import * as readline from "node:readline";
 import { LinkedInProvider } from "../providers/linkedin/index.js";
 import {
   writeSearchResults,
+  writePeopleSearchResults,
   writeMyPost,
   writeComments,
   writeConversation,
@@ -10,8 +11,13 @@ import {
   readLastOutgoingBody,
   renameConversationFiles,
   enrichConversationParticipants,
+  writeProfile,
+  readFreshProfile,
+  PROFILE_CACHE_MAX_AGE_DAYS,
 } from "../providers/linkedin/storage.js";
 import { extractPostIdFromUrl } from "../providers/linkedin/pages/comments.js";
+import { extractProfileSlug } from "../providers/linkedin/pages/profile.js";
+import type { ProfileStatus } from "../core/provider.js";
 import {
   addOutboxItem,
   listOutboxItems,
@@ -71,6 +77,27 @@ async function askYesNo(question: string): Promise<boolean> {
   }
 }
 
+function printProfileStatus(status: ProfileStatus, fromCache: boolean): void {
+  const when = status.fetchedAt ? status.fetchedAt.slice(0, 10) : "?";
+  console.log(`URL: ${status.url}`);
+  console.log(`Nom: ${status.name ?? "?"}`);
+  console.log(`Poste/boîte: ${status.headline ?? "?"}`);
+  console.log(`URN: ${status.profileUrn ?? "?"}`);
+  console.log(`Degré: ${status.degree}`);
+  console.log(`Bouton Message visible: ${status.canMessage ? "oui" : "non"}`);
+  console.log(`Invitation déjà envoyée: ${status.invitationPending ? "oui" : "non"}`);
+  console.log(`Récupéré le: ${when}${fromCache ? " (cache)" : ""}`);
+  if (status.positions?.length) {
+    console.log(`\nPostes actuels:`);
+    for (const p of status.positions) {
+      const head = [p.title, p.company].filter(Boolean).join(" — ");
+      console.log(`- ${head}${p.dateRange ? ` (${p.dateRange})` : ""}`);
+      if (p.description) console.log(`  ${p.description.replace(/\n/g, "\n  ")}`);
+    }
+  }
+  if (status.about) console.log(`\nInfos:\n${status.about}`);
+}
+
 function formatMessagePreview(body: string, maxLen = 120): string {
   const oneLine = body.replace(/\s+/g, " ").trim();
   return oneLine.length > maxLen ? oneLine.slice(0, maxLen - 1) + "…" : oneLine;
@@ -115,7 +142,7 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
-    .command("search <query>")
+    .command("posts:search <query>")
     .description("Chercher des posts LinkedIn et stocker le résultat en markdown")
     .option("-n, --limit <n>", "nombre max de posts", (v) => parseInt(v, 10), 20)
     .option("--since <range>", "past-24h | past-week | past-month")
@@ -127,6 +154,18 @@ export function registerLinkedInCommands(program: Command): void {
       const posts = await withProvider((p) => p.searchPosts(query, searchOpts));
       const file = writeSearchResults(query, posts);
       console.log(`${posts.length} post(s) trouvé(s). Stocké dans ${file}`);
+    });
+
+  linkedin
+    .command("people:search <query>")
+    .description("Chercher des personnes (relations de 1er degré par défaut) et stocker un tableau markdown nom/poste/boîte/profil")
+    .option("-n, --limit <n>", "nombre max de personnes", (v) => parseInt(v, 10), 20)
+    .option("--network <net>", "1st | 2nd | any (défaut 1st)", "1st")
+    .action(async (query: string, opts: { limit: number; network: string }) => {
+      const network = opts.network === "2nd" ? "2nd" : opts.network === "any" ? "any" : "1st";
+      const people = await withProvider((p) => p.searchPeople(query, { limit: opts.limit, network }));
+      const file = writePeopleSearchResults(query, people);
+      console.log(`${people.length} personne(s) trouvée(s). Stocké dans ${file}`);
     });
 
   linkedin
@@ -188,7 +227,7 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
-    .command("thread <url>")
+    .command("thread:sync <url>")
     .description("Synchroniser une conversation. url = URL profil (/in/slug/), URL thread (/messaging/thread/id/) ou thread ID")
     .action(async (url: string) => {
       const { conversation, messages } = await withProvider((p) => p.readConversation(url));
@@ -500,16 +539,24 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
-    .command("profile:status <url>")
-    .description("Lire le degré de relation, l'URN profil et l'état d'invitation/messagerie")
-    .action(async (url: string) => {
+    .command("profile:extract <url>")
+    .description(`Lire degré, URN, poste/boîte, postes actuels, Infos et état d'invitation/messagerie. Cache disque ${PROFILE_CACHE_MAX_AGE_DAYS}j dans data/linkedin/profiles/.`)
+    .option("--fresh", "ignorer le cache et recharger la page profil")
+    .action(async (url: string, opts: { fresh?: boolean }) => {
+      const slug = extractProfileSlug(url);
+
+      if (slug && !opts.fresh) {
+        const cached = readFreshProfile(slug);
+        if (cached) {
+          printProfileStatus(cached, true);
+          return;
+        }
+      }
+
       const status = await withProvider((p) => p.getProfileStatus(url));
-      console.log(`URL: ${status.url}`);
-      console.log(`Nom: ${status.name ?? "?"}`);
-      console.log(`URN: ${status.profileUrn ?? "?"}`);
-      console.log(`Degré: ${status.degree}`);
-      console.log(`Bouton Message visible: ${status.canMessage ? "oui" : "non"}`);
-      console.log(`Invitation déjà envoyée: ${status.invitationPending ? "oui" : "non"}`);
+      status.fetchedAt = new Date().toISOString();
+      if (slug) writeProfile(slug, status);
+      printProfileStatus(status, false);
     });
 
   linkedin
@@ -872,7 +919,7 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
-    .command("comments <postIdOrUrl>")
+    .command("comments:extract <postIdOrUrl>")
     .description("Récupérer les commentaires d'un post et les sauvegarder (accepte un activity ID ou une URL)")
     .action(async (postIdOrUrl: string) => {
       const comments = await withProvider((p) => p.listComments(postIdOrUrl));

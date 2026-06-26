@@ -1,7 +1,15 @@
 import { join } from "node:path";
 import { renameSync, existsSync } from "node:fs";
 import { providerDir, slugify, writeMarkdown, readMarkdown, writeJson, readJson } from "../../core/storage.js";
-import type { Post, Comment, Message, Conversation } from "../../core/provider.js";
+import type {
+  Post,
+  Comment,
+  Message,
+  Conversation,
+  PersonResult,
+  ProfileStatus,
+  ProfilePosition,
+} from "../../core/provider.js";
 
 const LINKEDIN = "linkedin" as const;
 
@@ -11,6 +19,8 @@ export const linkedinPaths = {
   searches: () => join(base(), "searches"),
   searchFile: (query: string, date: string) =>
     join(base(), "searches", `${slugify(query)}-${date}.md`),
+  peopleSearchFile: (query: string, date: string) =>
+    join(base(), "searches", "people", `${slugify(query)}-${date}.md`),
 
   myPostsDir: () => join(base(), "posts", "mine"),
   myPostFile: (postId: string, date: string) =>
@@ -35,6 +45,9 @@ export const linkedinPaths = {
 
   commentsDir: () => join(base(), "comments"),
   commentsFile: (postId: string) => join(base(), "comments", `${slugify(postId)}.md`),
+
+  profilesDir: () => join(base(), "profiles"),
+  profileFile: (slug: string) => join(base(), "profiles", `${slug}.md`),
 };
 
 function isoDate(d: Date = new Date()): string {
@@ -65,6 +78,118 @@ export function writeSearchResults(query: string, posts: Post[]): string {
   });
 
   return path;
+}
+
+const DEGREE_LABELS: Record<string, string> = {
+  "1st": "1er",
+  "2nd": "2e",
+  "3rd": "3e",
+  "out-of-network": "hors réseau",
+  unknown: "?",
+};
+
+export function writePeopleSearchResults(query: string, people: PersonResult[]): string {
+  const date = isoDate();
+  const path = linkedinPaths.peopleSearchFile(query, date);
+  const esc = (s: string): string => s.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+
+  const rows = people
+    .map((p) => {
+      const degree = p.degree ? DEGREE_LABELS[p.degree] ?? p.degree : "?";
+      return `| ${esc(p.name)} | ${degree} | ${esc(p.headline ?? "")} | ${esc(p.location ?? "")} | [profil](${p.profileUrl}) |`;
+    })
+    .join("\n");
+
+  const table = people.length
+    ? `| Nom | Degré | Poste / boîte | Lieu | Profil |\n|---|---|---|---|---|\n${rows}\n`
+    : "_Aucun résultat._\n";
+
+  writeMarkdown(path, {
+    frontmatter: {
+      provider: LINKEDIN,
+      kind: "people-search",
+      query,
+      fetched_at: new Date().toISOString(),
+      result_count: people.length,
+    },
+    body: table,
+  });
+
+  return path;
+}
+
+/** Fraîcheur du cache profil: au-delà, on recharge la page. */
+export const PROFILE_CACHE_MAX_AGE_DAYS = 30;
+
+interface ProfileFrontmatter {
+  [key: string]: unknown;
+  provider: string;
+  kind: string;
+  url: string;
+  slug: string;
+  name?: string | null;
+  headline?: string | null;
+  degree: string;
+  profile_urn?: string | null;
+  invitation_pending: boolean;
+  can_message: boolean;
+  positions?: ProfilePosition[];
+  fetched_at: string;
+}
+
+/** Écrit le profil dans `data/linkedin/profiles/<slug>.md` (frontmatter + Infos en corps). */
+export function writeProfile(slug: string, status: ProfileStatus): string {
+  const path = linkedinPaths.profileFile(slug);
+  const fetchedAt = status.fetchedAt ?? new Date().toISOString();
+  writeMarkdown<ProfileFrontmatter>(path, {
+    frontmatter: {
+      provider: LINKEDIN,
+      kind: "profile",
+      url: status.url,
+      slug,
+      name: status.name ?? null,
+      headline: status.headline ?? null,
+      degree: status.degree,
+      profile_urn: status.profileUrn ?? null,
+      invitation_pending: status.invitationPending,
+      can_message: status.canMessage,
+      positions: status.positions ?? [],
+      fetched_at: fetchedAt,
+    },
+    body: status.about ? status.about + "\n" : "",
+  });
+  return path;
+}
+
+/** Relit un profil en cache, sans contrôle de fraîcheur. */
+export function readCachedProfile(slug: string): ProfileStatus | null {
+  const doc = readMarkdown<ProfileFrontmatter>(linkedinPaths.profileFile(slug));
+  if (!doc) return null;
+  const fm = doc.frontmatter;
+  if (!fm.url || !fm.degree || !fm.fetched_at) return null;
+  const status: ProfileStatus = {
+    url: fm.url,
+    degree: fm.degree as ProfileStatus["degree"],
+    invitationPending: Boolean(fm.invitation_pending),
+    canMessage: Boolean(fm.can_message),
+    fetchedAt: fm.fetched_at,
+  };
+  if (fm.name) status.name = fm.name;
+  if (fm.headline) status.headline = fm.headline;
+  if (fm.profile_urn) status.profileUrn = fm.profile_urn;
+  const about = doc.body.trim();
+  if (about) status.about = about;
+  if (Array.isArray(fm.positions) && fm.positions.length > 0) status.positions = fm.positions;
+  return status;
+}
+
+/** Relit un profil seulement s'il a moins de `PROFILE_CACHE_MAX_AGE_DAYS` jours. */
+export function readFreshProfile(slug: string): ProfileStatus | null {
+  const status = readCachedProfile(slug);
+  if (!status?.fetchedAt) return null;
+  const ageMs = Date.now() - new Date(status.fetchedAt).getTime();
+  if (Number.isNaN(ageMs) || ageMs > PROFILE_CACHE_MAX_AGE_DAYS * 86_400_000) return null;
+  return status;
 }
 
 interface MyPostIndexEntry {
@@ -328,7 +453,7 @@ export function renameConversationFiles(): { renamed: ConversationRename[]; skip
       ? fmParticipants.filter((n): n is string => typeof n === "string" && n.length > 0)
       : [];
     if (names.length === 0) {
-      skipped.push({ threadId: entry.threadId, reason: "participants vides, faire `linkedin thread <url>` d'abord" });
+      skipped.push({ threadId: entry.threadId, reason: "participants vides, faire `linkedin thread:sync <url>` d'abord" });
       continue;
     }
 

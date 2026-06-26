@@ -1,7 +1,27 @@
 import type { Page } from "playwright";
-import type { ConnectionDegree, ProfileStatus, InviteResult } from "../../../core/provider.js";
+import type { ConnectionDegree, ProfilePosition, ProfileStatus, InviteResult } from "../../../core/provider.js";
 import { sleep, LoginRequiredError } from "../../../core/throttle.js";
 import { dumpPageState } from "../../../core/debug.js";
+
+/**
+ * Les sections "Infos" et "Expérience" se rendent en lazy quand elles entrent
+ * dans le viewport. On descend la page par paliers pour déclencher leur rendu,
+ * puis on remonte en haut avant l'extraction (le Topcard reste en DOM).
+ */
+async function loadProfileSections(page: Page): Promise<void> {
+  await page
+    .evaluate(async () => {
+      const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const height = document.scrollingElement?.scrollHeight ?? document.body.scrollHeight;
+      for (let y = 0; y < Math.min(height, 6000); y += 600) {
+        window.scrollTo(0, y);
+        await wait(150);
+      }
+      window.scrollTo(0, 0);
+    })
+    .catch(() => undefined);
+  await sleep(1200);
+}
 
 const PROFILE_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/([^/?#]+)/i;
 
@@ -30,6 +50,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
   await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
   assertNotBlocked(page);
   await sleep(2500);
+  await loadProfileSections(page);
 
   const raw = await page
     .evaluate(() => {
@@ -124,6 +145,32 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
         return "";
       })();
 
+      // Headline (poste et entreprise): le `.text-body-medium` du Topcard rend
+      // la ligne de titre juste sous le nom. Fallback: première ligne de texte
+      // du Topcard, après le nom, qui n'est ni le degré ni le nom lui-même.
+      const headline = (() => {
+        const scopeEl: HTMLElement | Document = topcardEl ?? document;
+        const direct = scopeEl.querySelector<HTMLElement>(".text-body-medium.break-words, .text-body-medium");
+        const dt = innerText(direct).split("\n")[0]?.trim() ?? "";
+        if (dt && dt !== (name ?? "")) return dt;
+        if (topcardEl) {
+          const nameTrim = (name ?? "").trim();
+          const lines = (topcardEl.innerText ?? "")
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean);
+          const idx = nameTrim ? lines.findIndex((l) => l === nameTrim) : -1;
+          for (const l of lines.slice(idx + 1)) {
+            if (l === nameTrim) continue;
+            if (/^[·•]?\s*(1er|1ère|2e|3e\+?|2nd|3rd)$/i.test(l)) continue;
+            if (/relation au \d/i.test(l)) continue;
+            if (l.length < 4) continue;
+            return l;
+          }
+        }
+        return null;
+      })();
+
       // Boutons d'action: tous scopés au Topcard pour éviter les collisions
       // avec les suggestions sidebar (Moussa DIAKITE en attente, Inviter
       // Logan R., etc.).
@@ -155,8 +202,110 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
         return aria === "Plus" || aria.toLowerCase().startsWith("plus d'actions") || aria.toLowerCase().startsWith("more actions");
       });
 
+      // Sections "Infos" et "Expérience". Le profil récent est server-driven:
+      // chaque carte porte un `componentkey` stable et indépendant de la langue
+      // (même schéma que le Topcard: `com.linkedin.sdui.profile.card.ref<URN><Section>`).
+      // On localise les cartes par ce suffixe, avec un fallback ancre/`<h2>` pour
+      // l'ancien layout. On lit ensuite par forme des lignes, sans classes CSS
+      // obfusquées ni mots-clés de langue.
+      const findCard = (suffix: string, headers: string[]): HTMLElement | null => {
+        const byKey = Array.from(document.querySelectorAll<HTMLElement>("[componentkey]")).find((el) => {
+          const k = el.getAttribute("componentkey") ?? "";
+          return k.startsWith("com.linkedin.sdui.profile.card.ref") && k.endsWith(suffix);
+        });
+        if (byKey) return byKey;
+        const anchor = document.getElementById(suffix.toLowerCase());
+        const viaAnchor = anchor?.closest("section");
+        if (viaAnchor) return viaAnchor as HTMLElement;
+        for (const s of Array.from(document.querySelectorAll<HTMLElement>("section"))) {
+          const h = s.querySelector("h2");
+          const t = (h ? innerText(h) : "").toLowerCase();
+          if (t && headers.some((n) => t.includes(n))) return s;
+        }
+        return null;
+      };
+
+      const cardLines = (el: HTMLElement | null): string[] =>
+        el
+          ? innerText(el)
+              .split("\n")
+              .map((l) => l.trim())
+              .filter(Boolean)
+          : [];
+
+      // Infos: 1ère ligne = en-tête localisé (ignoré). Le corps est la suite de
+      // lignes "prose" (longues ou ponctuées comme une phrase) jusqu'à une ligne
+      // courte de sous-section (compétences, sélection). Détection par forme, pas
+      // par mot-clé.
+      const about = (() => {
+        const lines = cardLines(findCard("About", ["à propos", "infos", "about"]));
+        if (lines.length < 2) return null;
+        const body: string[] = [];
+        for (const l of lines.slice(1)) {
+          const prose = l.length >= 40 || /[.!?…]$/.test(l);
+          if (!prose) break;
+          body.push(l);
+        }
+        return body.join("\n") || null;
+      })();
+
+      // Expérience: chaque poste est une séquence de lignes ancrée par sa ligne
+      // de période (une année + un séparateur de plage ou une durée). Avant la
+      // date: titre puis entreprise; après: localisation puis description. On
+      // ignore le bruit "Article N" (média mis en avant) et les libellés de
+      // bouton repérés via `<button>`.
+      const positions = (() => {
+        const expCard = findCard("ExperienceTopLevelSection", ["expérience", "experience"]);
+        const lines = cardLines(expCard);
+        if (lines.length < 2) return [] as Array<{
+          title: string;
+          company: string | null;
+          dateRange: string | null;
+          description: string | null;
+          current: boolean;
+        }>;
+        const buttonTexts = new Set(
+          expCard
+            ? Array.from(expCard.querySelectorAll<HTMLElement>("button"))
+                .map((b) => innerText(b).trim())
+                .filter(Boolean)
+            : [],
+        );
+        const body = lines.slice(1).filter((l) => !buttonTexts.has(l));
+        const isNoise = (l: string): boolean => /^article\s+\d+$/i.test(l);
+        const isDateLine = (l: string): boolean => /(19|20)\d{2}/.test(l) && /[-–—·]/.test(l);
+        const PRESENT = /(aujourd['’]?hui|présent|present|à ce jour|en poste|\bnow\b)/i;
+
+        const dateIdx: number[] = [];
+        body.forEach((l, i) => {
+          if (isDateLine(l)) dateIdx.push(i);
+        });
+
+        const out = [];
+        for (let n = 0; n < dateIdx.length; n++) {
+          const di = dateIdx[n]!;
+          const dateRange = body[di]!;
+          const before = body.slice(Math.max(0, di - 3), di).filter((x) => !isNoise(x));
+          const title = (before[before.length - 2] ?? before[before.length - 1] ?? "").trim();
+          if (!title) continue;
+          let company: string | null = (before[before.length - 1] ?? "").trim() || null;
+          if (company === title || (company && isNoise(company))) company = null;
+          if (company) company = (company.split("·")[0] ?? "").trim() || null;
+          // Description: lignes après la localisation (di+1) jusqu'au poste suivant.
+          const end = n + 1 < dateIdx.length ? dateIdx[n + 1]! - 2 : body.length;
+          const after = body.slice(di + 2, Math.max(di + 2, end));
+          const description = after.join("\n").trim() || null;
+          const current = PRESENT.test(dateRange);
+          out.push({ title, company, dateRange, description, current });
+        }
+        return out;
+      })();
+
       return {
         name,
+        headline,
+        about,
+        positions,
         profileUrn,
         degreeText,
         topcardFound: Boolean(topcardEl),
@@ -175,6 +324,14 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
 
   if (process.env.SUPERSOCIAL_DEBUG === "true" && !raw.degreeText) {
     await dumpPageState(page, "linkedin-profile-degree-not-found", { url: targetUrl, name: raw.name });
+  }
+  if (process.env.SUPERSOCIAL_DEBUG === "true") {
+    await dumpPageState(page, "linkedin-profile-debug", {
+      url: targetUrl,
+      name: raw.name,
+      aboutLen: (raw.about ?? "").length,
+      positions: raw.positions?.length ?? 0,
+    });
   }
 
   const degree: ConnectionDegree = (() => {
@@ -201,6 +358,24 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
     canMessage,
   };
   if (raw.name) status.name = raw.name;
+  if (raw.headline) status.headline = raw.headline;
+  if (raw.about) status.about = raw.about;
+
+  // Postes actuels: on garde ceux détectés "en cours". Si la détection échoue
+  // (période sans marqueur reconnu), on retombe sur le poste le plus récent.
+  const allPositions = Array.isArray(raw.positions) ? raw.positions : [];
+  const currentPositions = allPositions.filter((p) => p.current);
+  const kept = currentPositions.length > 0 ? currentPositions : allPositions.slice(0, 1);
+  if (kept.length > 0) {
+    status.positions = kept.map((p): ProfilePosition => ({
+      title: p.title,
+      ...(p.company ? { company: p.company } : {}),
+      ...(p.dateRange ? { dateRange: p.dateRange } : {}),
+      ...(p.description ? { description: p.description } : {}),
+      ...(p.current ? { current: true } : {}),
+    }));
+  }
+
   if (raw.profileUrn) status.profileUrn = `urn:li:fsd_profile:${raw.profileUrn}`;
   return status;
 }

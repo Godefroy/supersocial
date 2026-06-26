@@ -25,6 +25,8 @@ npm run dev -- linkedin --help
 
 Les données produites atterrissent dans `data/linkedin/` (searches, posts, conversations, comments, outbox) en markdown avec frontmatter YAML. L'index JSON correspondant est régénérable.
 
+Sourcer des contacts parmi ses relations : `linkedin people:search "<requête booléenne>"` cherche des personnes (relations de 1er degré par défaut, `--network 2nd|any` pour élargir) et écrit un tableau markdown nom/poste/boîte/profil dans `data/linkedin/searches/people/`, prêt pour un tri à l'œil. La colonne poste/boîte vient du sous-titre LinkedIn. Détails dans la skill.
+
 Envoyer un DM à quelqu'un dont on a l'URL profil :
 
 ```bash
@@ -39,7 +41,7 @@ Sécurité contre les doublons : `outbox:send` vérifie le thread cible avant ch
 
 Détection du DM refusé : si LinkedIn affiche l'upsell Premium/InMail (typique pour les non-1ère relation, ou suite à un burst d'envois compose), le code détecte le marqueur `card-upsell-v2__headline` en 3-5s et lève `LinkedInDmRestrictedError` qui interrompt le batch outbox. Pour les cibles non-connectées, utiliser le workflow connect d'abord.
 
-Demande de connexion : `linkedin connect <url> [--note <body>]` envoie une invitation, gère les deux emplacements du bouton "Se connecter" (visible directement ou caché dans le menu "Plus" selon le degré). Court-circuite si déjà 1ère relation ou invitation pendante. `linkedin profile:status <url>` lit le degré de relation, l'URN, l'état du bouton Message et l'état d'invitation.
+Demande de connexion : `linkedin connect <url> [--note <body>]` envoie une invitation, gère les deux emplacements du bouton "Se connecter" (visible directement ou caché dans le menu "Plus" selon le degré). Court-circuite si déjà 1ère relation ou invitation pendante. `linkedin profile:extract <url>` lit le degré de relation, l'URN, le poste et l'entreprise (headline plus postes actuels), la section Infos, l'état du bouton Message et l'état d'invitation. Chaque profil est mis en cache dans `data/linkedin/profiles/<slug>.md`: un profil de moins de 30 jours est servi depuis le disque sans recharger LinkedIn, `--fresh` force le rechargement.
 
 File d'invitations : `linkedin invite:add` empile, `linkedin invite:send -n N` traite par lots (limite 15/jour), `linkedin invite:check` re-vérifie l'état des invitations envoyées et déplace celles acceptées vers `accepted/`. `invite:retry` rejoue les échecs, `invite:cancel` retire une pending. Stockage symétrique à l'outbox dans `data/linkedin/invitations/{pending,sent,accepted,failed}/` avec un fichier markdown par invitation.
 

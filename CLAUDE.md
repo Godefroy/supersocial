@@ -6,9 +6,9 @@
 - Prefer positive formulations over negative ones. E.g. "rester indépendant" rather than "ne pas dépendre", "dès le premier sprint" rather than "pas à la fin".
 - Avoid label-colon patterns like "Objectif :", "Result:", "Avantage :". Integrate the information into the sentence.
 
-## Persistance des règles
+## General rules
 
-Ne pas utiliser le système de mémoire Claude (`~/.claude/projects/.../memory/`). Toutes les règles persistantes pour ce projet s'écrivent dans ce `CLAUDE.md`.
+- Never use Claude's user/project memory. When asked to remember something, add a minimal instruction here in `CLAUDE.md` (or in the relevant skill under `.claude/skills/`).
 
 ## Règles LinkedIn
 
@@ -25,6 +25,14 @@ Avant tout retry d'envoi DM dont la tentative précédente a échoué, vérifier
 Ne JAMAIS DM une cible qui n'est pas en 1ère relation. LinkedIn refuse l'envoi gratuit et affiche l'upsell Premium/InMail. `outbox:send` applique cette règle automatiquement via un pre-flight `getResolvedTarget` qui lit le degré de relation depuis la page profil (cache partagé avec le `readConversation` qui suit, donc pas de double chargement). Les items dont la cible n'est pas 1ère relation restent en pending sans déclencher d'action LinkedIn (statut `waiting`). Pour les passer à 1ère relation: envoyer une demande de connexion via `linkedin connect <url>` ou queue via `linkedin invite:add <url> --then-dm <body>` qui fait l'invitation + le DM chaîné en une commande.
 
 Si une commande remonte `LinkedInDmRestrictedError`, prévenir l'utilisateur, ne pas retry les items concernés tant que la restriction n'est pas levée. Les autres items 1ère relation peuvent continuer à être traités séparément.
+
+## Extraction DOM
+
+Privilégier les signaux structurels aux mots-clés et regex de contenu quand on extrait des données d'une page LinkedIn. Les classes CSS de LinkedIn sont obfusquées et changent, mais la structure reste stable: rôles ARIA (`[role="listitem"]`, `[role="list"]`), sous-arbre d'un lien (`a[href*="/in/"]`), `<button>`, `span[aria-hidden="true"]` (le texte visible, sans le doublon visually-hidden), ordre des lignes dans un lockup. Lire les champs par position dans le bon conteneur plutôt que par reconnaissance lexicale.
+
+Bannir les heuristiques fragiles et dépendantes de la langue: listes de villes ou de pays pour deviner un lieu, mots de section comme "Poste actuel"/"relations en commun"/"sales navigator", filtres sur le libellé d'un bouton. Exclure plutôt les boutons via leurs `<button>`, scoper via les rôles ARIA, et déduire par ordre d'apparition. Tolérer comme seule exception un petit ensemble fermé et stable (ex: le token de degré `1er/2e/3e/1st…`).
+
+Pour valider ou ajuster un extracteur, s'appuyer sur les dumps `data/.state/debug/` (HTML + innerText + screenshot) plutôt que d'enchaîner des runs réels. Un dump gardé sous `SUPERSOCIAL_DEBUG=true` suffit en général à inspecter la vraie structure.
 
 ## Skills Claude Code
 

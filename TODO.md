@@ -6,12 +6,13 @@ Plan de développement pour supersocial. Maintenu à chaque ajout/retrait.
 
 Commandes fonctionnelles :
 - `linkedin login` : session persistante via `.chrome-profile/`
-- `linkedin search <query>` : posts par mot-clé
+- `linkedin posts:search <query>` : posts par mot-clé
+- `linkedin people:search <query>` : personnes (relations 1er degré par défaut), tableau nom/poste/boîte/profil pour sourcing
 - `linkedin posts:sync` : synchro complète (243 posts depuis 2013 synchronisés)
 - `linkedin posts:sync:latest` : synchro incrémentale (s'arrête sur IDs connus)
-- `linkedin comments <postIdOrUrl>` : tous les commentaires avec threading
+- `linkedin comments:extract <postIdOrUrl>` : tous les commentaires avec threading
 - `linkedin throttle:status` : compteurs journaliers par action
-- `linkedin thread <url>` : synchro d'une conversation (URL profil, URL thread ou thread ID)
+- `linkedin thread:sync <url>` : synchro d'une conversation (URL profil, URL thread ou thread ID)
 - `linkedin dm <url> <body>` : envoi DM avec synchro + confirmation + dédup
 - `linkedin outbox:add|list|send|retry|cancel` : boîte d'envoi pour batch throttlé (retry rejoue les items `failed`)
 - `linkedin conversations:rename` : recompose les noms de fichier des conversations dont le slug est resté en thread ID brut
@@ -36,14 +37,15 @@ Infra :
 ### Lecture LinkedIn
 
 - [ ] `linkedin inbox:list` : lister les conversations (aperçu, non-lu) depuis `/messaging/`
-- [x] `linkedin thread <url>` : lire une conversation, stocker en markdown append-only
+- [x] `linkedin thread:sync <url>` : lire une conversation, stocker en markdown append-only
+- [x] `linkedin people:search <query>` : chercher des personnes (filtre réseau `--network 1st|2nd|any`), tableau markdown nom/poste/boîte/lieu/profil dans `data/linkedin/searches/people/`. Headline aussi exposé par `profile:extract`.
 
 ### Écriture LinkedIn
 
 - [x] `linkedin dm <url> <body>` : envoyer un DM
 - [x] `linkedin outbox:*` : préparer et envoyer des DM en batch
 - [x] `linkedin connect <url> [--note <body>]` : envoyer une invitation, avec ou sans note (gère le bouton "Se connecter" visible direct ou dans le menu "Plus")
-- [x] `linkedin profile:status <url>` : lire degré, URN, état Message/invitation
+- [x] `linkedin profile:extract <url>` : lire degré, URN, état Message/invitation, headline, section Infos et postes actuels (intitulé/entreprise/période/description) depuis la page profil. Cache disque 30j dans `data/linkedin/profiles/<slug>.md` (sert sans recharger si <30j, `--fresh` force le rechargement).
 - [x] `linkedin invite:*` : file d'invitations symétrique à l'outbox (`add|list|send|check|retry|cancel`), stockage `data/linkedin/invitations/{pending,sent,accepted,failed}/`. `invite:check` re-vérifie l'état des envoyées et déplace en `accepted/` quand la cible est passée 1ère relation.
 - [x] Workflow chaîné `invite → wait → dm`: `invite:add --then-dm <body>` queue invitation + DM atomiquement. `outbox:send` skip les DMs dont la cible n'est pas 1ère relation (statut `waiting`, reste en pending sans humanPause). Cron `invite:check` marque acceptée → cron `outbox:send` suivant fire le DM.
 - [x] Pre-flight degré dans `outbox:send` (jamais DM si non-1ère relation, partage cache profil avec `readConversation`)

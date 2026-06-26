@@ -1,6 +1,6 @@
 ---
 name: supersocial
-description: Automatiser LinkedIn (chercher/poster des posts, lire/envoyer des DM, boîte d'envoi, demander des connexions avec ou sans note, lire le degré de relation d'un profil, lire/poster des commentaires, synchroniser l'inventaire de ses posts). À utiliser dès que l'utilisateur demande une action LinkedIn.
+description: Automatiser LinkedIn (chercher des posts, chercher des personnes parmi ses relations, lire/envoyer des DM, boîte d'envoi, demander des connexions avec ou sans note, lire le degré de relation d'un profil, lire/poster des commentaires, synchroniser l'inventaire de ses posts). À utiliser dès que l'utilisateur demande une action LinkedIn.
 ---
 
 # supersocial
@@ -11,12 +11,15 @@ CLI locale. Invoquer via `npm run dev -- <commande>` depuis la racine du projet.
 
 ```bash
 npm run dev -- linkedin throttle:status
-npm run dev -- linkedin search <query> [-n 20] [--since past-24h|past-week|past-month]
+npm run dev -- linkedin posts:search <query> [-n 20] [--since past-24h|past-week|past-month]
 npm run dev -- linkedin posts:sync [-n 50] [--all]
 npm run dev -- linkedin posts:sync:latest [-n 200]
 
+# Recherche de personnes (sourcing)
+npm run dev -- linkedin people:search <query> [-n 20] [--network 1st|2nd|any]
+
 # Profils et invitations
-npm run dev -- linkedin profile:status <url>
+npm run dev -- linkedin profile:extract <url> [--fresh]
 npm run dev -- linkedin connect <url> [--note <body>] [--yes] [--dry-run]
 
 # File d'invitations (préparer puis envoyer en batch sous throttling)
@@ -28,7 +31,7 @@ npm run dev -- linkedin invite:retry [ids...] [--all] [--match <motif>]
 npm run dev -- linkedin invite:cancel <id>
 
 # Conversations privées
-npm run dev -- linkedin thread <url>
+npm run dev -- linkedin thread:sync <url>
 npm run dev -- linkedin dm <url> <body> [--yes] [--dry-run] [--force] [--queue]
 npm run dev -- linkedin conversations:rename
 
@@ -40,7 +43,7 @@ npm run dev -- linkedin outbox:retry [ids...] [--all] [--match <motif>]
 npm run dev -- linkedin outbox:cancel <id>
 
 # Commentaires
-npm run dev -- linkedin comments <postIdOrUrl>
+npm run dev -- linkedin comments:extract <postIdOrUrl>
 npm run dev -- linkedin comment <postId> <body>
 
 npm run dev -- linkedin publish <body> [--visibility public|connections]
@@ -48,13 +51,23 @@ npm run dev -- linkedin publish <body> [--visibility public|connections]
 
 Toutes les commandes écrivent leur résultat dans `data/linkedin/` et affichent le fichier produit sur stdout.
 
-## thread et dm
+## people:search
+
+`people:search <query>` cherche des personnes et écrit un tableau markdown (Nom, Degré, Poste / boîte, Lieu, Profil) dans `data/linkedin/searches/people/`. Par défaut `--network 1st` reste dans les relations existantes (sourcing 1er degré). `--network 2nd` ou `any` élargit. La colonne Poste / boîte sert au tri (poste adapté, boîte adaptée). Pagine jusqu'à atteindre `-n` ou la fin des résultats. Consomme un slot `search` (limite 15/jour).
+
+Opérateurs booléens sur la recherche gratuite (contrainte LinkedIn, pas supersocial):
+- Garder les requêtes courtes. Le moteur gratuit plafonne le nombre d'opérateurs (limite basse non publiée) et renvoie "Aucun résultat" au-delà. En pratique viser environ 3 expressions reliées par `OR`, sans `AND`.
+- `AND` / `OR` / `NOT` doivent être en MAJUSCULES. Les guillemets cadrent une expression exacte (`"content manager"`).
+- Pour couvrir un ICP large, lancer plusieurs recherches simples (une par groupe de synonymes) et fusionner les résultats, plutôt qu'un seul gros booléen avec `AND`.
+- Un résultat à 0 personne avec "Aucun résultat" côté LinkedIn n'est pas un bug d'extraction: c'est la requête (trop d'opérateurs ou cible vide en 1er degré). Simplifier avant de relancer.
+
+## thread:sync et dm
 
 `<url>` accepte trois formes : URL profil (`/in/slug/`), URL thread (`/messaging/thread/<id>/`) ou thread ID brut (`2-...`).
 
 Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=<urn>` et dérive le thread ID depuis les `data-event-urn` des messages chargés (LinkedIn affiche les messages du thread existant dans le panneau droit, même si l'URL du navigateur ne change pas). S'il n'y a pas encore de thread, le resolver retourne une `composeUrl` et l'envoi se fait en mode neuf.
 
-`thread <url>` synchronise l'historique et le stocke dans `data/linkedin/conversations/`.
+`thread:sync <url>` synchronise l'historique et le stocke dans `data/linkedin/conversations/`.
 
 `dm <url> <body>` essaie de charger l'historique d'abord. Si thread existant : affiche les 3 derniers messages, refuse le doublon (sauf `--force`), demande confirmation (sauf `--yes`), envoie, re-synchronise. Si thread neuf : envoi direct via compose, pas de dédup possible.
 
@@ -68,9 +81,11 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 
 Avant chaque envoi, `outbox:send` vérifie le thread cible et compare le dernier message sortant au body de l'item. Si match exact, l'item passe direct en `sent/` avec `note: déjà envoyé (dedup match)` sans consommer de quota dm. Sécurise les retries après un faux négatif (ex: compose-no-redirect où le message a été envoyé mais l'exception a été levée).
 
-## profile:status et connect
+## profile:extract et connect
 
-`profile:status <url>` charge la page profil et affiche degré (1st/2nd/3rd/out-of-network/unknown), URN, nom, état du bouton Message et état d'invitation.
+`profile:extract <url>` charge la page profil et affiche degré (1st/2nd/3rd/out-of-network/unknown), URN, nom, poste/boîte (headline du Topcard), les postes actuels (intitulé, entreprise, période, description) extraits de la section Expérience, la section Infos, l'état du bouton Message et l'état d'invitation. Charge les sections par un scroll par paliers avant extraction.
+
+Cache disque: chaque profil récupéré est écrit dans `data/linkedin/profiles/<slug>.md` avec sa date. Un nouvel appel sur un profil de moins de 30 jours le sert depuis le cache sans charger LinkedIn ni consommer de quota (l'affichage indique "(cache)"). `--fresh` force le rechargement.
 
 `connect <url>` envoie une demande de connexion. Court-circuite si déjà 1ère relation ou invitation pendante. Le bouton "Se connecter" est cherché en visible direct d'abord, puis dans le menu "Plus" en fallback (selon le degré). Avec `--note`, ouvre la modale de note personnalisée et y tape le body. Sans note, clique "Envoyer sans note". Trace l'envoi dans `data/linkedin/invitations/sent/` (ou `accepted/` si la cible est déjà 1ère relation).
 

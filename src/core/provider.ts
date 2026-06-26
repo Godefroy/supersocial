@@ -69,6 +69,27 @@ export interface SearchOptions {
   dateRange?: "past-24h" | "past-week" | "past-month";
 }
 
+/** Filtre de degré de relation pour la recherche de personnes. */
+export type NetworkFilter = "1st" | "2nd" | "any";
+
+export interface PeopleSearchOptions {
+  limit?: number;
+  /** Degré de relation. "1st" (défaut) reste dans les relations existantes. */
+  network?: NetworkFilter;
+}
+
+export interface PersonResult {
+  name: string;
+  /** URL canonique `/in/<slug>/`. */
+  profileUrl: string;
+  profileUrn?: string;
+  /** Sous-titre principal du résultat: en général "Poste chez Entreprise". */
+  headline?: string;
+  /** Sous-titre secondaire: en général la localisation. */
+  location?: string;
+  degree?: ConnectionDegree;
+}
+
 export interface PublishOptions {
   body: string;
   visibility?: "public" | "connections";
@@ -81,10 +102,31 @@ export interface ThreadSnapshot {
 
 export type ConnectionDegree = "1st" | "2nd" | "3rd" | "out-of-network" | "unknown";
 
+export interface ProfilePosition {
+  /** Intitulé du poste. */
+  title: string;
+  /** Entreprise, nettoyée du suffixe de type de contrat ("· CDI", "· Full-time"). */
+  company?: string;
+  /** Période affichée ("janv. 2020 - aujourd'hui · 4 ans"). */
+  dateRange?: string;
+  /** Description du poste quand renseignée sur le profil. */
+  description?: string;
+  /** True si le poste est en cours (période contenant "aujourd'hui"/"present"). */
+  current?: boolean;
+}
+
 export interface ProfileStatus {
   /** URL canonique `/in/<slug>/`. */
   url: string;
   name?: string;
+  /** Sous-titre du profil (poste et entreprise) quand extrait depuis le Topcard. */
+  headline?: string;
+  /** Section "Infos"/"À propos" du profil quand présente. */
+  about?: string;
+  /** Postes actuellement occupés (intitulé, entreprise, description). */
+  positions?: ProfilePosition[];
+  /** Date ISO de récupération. Renseignée par le cache disque ou au moment du fetch. */
+  fetchedAt?: string;
   /** URN profil interne (`urn:li:fsd_profile:<id>`) quand extrait. */
   profileUrn?: string;
   degree: ConnectionDegree;
@@ -119,6 +161,8 @@ export interface SocialProvider {
   readonly id: ProviderId;
 
   searchPosts(query: string, opts?: SearchOptions): Promise<Post[]>;
+  /** Cherche des personnes, par défaut dans les relations de 1er degré. */
+  searchPeople(query: string, opts?: PeopleSearchOptions): Promise<PersonResult[]>;
   listMyPosts(opts?: { limit?: number }): Promise<Post[]>;
   listConversations(opts?: { limit?: number }): Promise<Conversation[]>;
   /** Accepte une URL profil, URL thread ou thread ID. Retourne le snapshot complet. */

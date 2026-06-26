@@ -10,6 +10,8 @@ import type {
   ThreadSnapshot,
   ProfileStatus,
   InviteResult,
+  PeopleSearchOptions,
+  PersonResult,
 } from "../../core/provider.js";
 import type { ProviderId } from "../../core/storage.js";
 import { launchPersistentChrome, closeContext } from "../../core/browser.js";
@@ -23,6 +25,7 @@ import {
 import { checkAndRecord } from "../../core/throttle-state.js";
 import { hasLinkedInSession } from "../../core/session.js";
 import { searchPostsOnPage } from "./pages/search.js";
+import { searchPeopleOnPage } from "./pages/people-search.js";
 import { listMyPostsOnPage } from "./pages/my-posts.js";
 import { listCommentsOnPage } from "./pages/comments.js";
 import { runLinkedInLogin } from "./pages/login.js";
@@ -79,6 +82,18 @@ export class LinkedInProvider implements SocialProvider {
     if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
     await checkPageForRedFlags(page);
     return posts;
+  }
+
+  async searchPeople(query: string, opts: PeopleSearchOptions = {}): Promise<PersonResult[]> {
+    checkAndRecord("search");
+    const page = await this.ensurePage();
+    const people = await searchPeopleOnPage(page, query, {
+      ...(opts.limit != null ? { limit: opts.limit } : {}),
+      ...(opts.network ? { network: opts.network } : {}),
+    });
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    return people;
   }
 
   async listMyPosts(opts: { limit?: number; knownIds?: Set<string> } = {}): Promise<Post[]> {
