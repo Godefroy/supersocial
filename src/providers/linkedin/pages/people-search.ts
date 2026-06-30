@@ -60,11 +60,11 @@ async function extractPeopleOnPage(page: Page): Promise<RawPerson[]> {
 
       // Token de degré LinkedIn: petit ensemble fermé et stable (FR + EN), pas
       // une liste de mots-clés ouverte.
-      const DEGREE_LINE_RE = /^[·•\s]*(1er|1ère|2e|3e\+?|2nd|3rd)\s*$/i;
+      const DEGREE_LINE_RE = /^[·•\s]*(1er|1ère|1st|2e|2nd|3e\+?|3rd)\s*$/i;
       const stripDegree = (s: string): string =>
-        s.replace(/\s*[·•]\s*(1er|1ère|2e|3e\+?|2nd|3rd)\b.*$/i, "").trim();
+        s.replace(/\s*[·•]\s*(1er|1ère|1st|2e|2nd|3e\+?|3rd)\b.*$/i, "").trim();
       const degreeFrom = (s: string): string | null => {
-        const m = s.match(/(?:^|[·•\s])(1er|1ère|2e|3e\+?|2nd|3rd)(?:\b|$)/i);
+        const m = s.match(/(?:^|[·•\s])(1er|1ère|1st|2e|2nd|3e\+?|3rd)(?:\b|$)/i);
         return m?.[1] ?? null;
       };
 

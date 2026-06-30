@@ -111,7 +111,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
           for (const p of ps) {
             if (!isVisible(p)) continue;
             const t = (p.innerText ?? "").trim();
-            const m = t.match(/^[·•]\s*(1er|1ère|2e|3e\+?|2nd|3rd)$/i);
+            const m = t.match(/^[·•]\s*(1er|1ère|1st|2e|2nd|3e\+?|3rd)$/i);
             if (m?.[1]) return m[1].toLowerCase();
           }
         }
@@ -121,7 +121,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
           for (const el of ariaElements) {
             const aria = (el.getAttribute("aria-label") ?? "").trim();
             if (!aria.startsWith(nameTrim)) continue;
-            const m = aria.match(/(?:^|\s)(1er|1ère|2e|3e\+?|2nd|3rd)\s*$/i);
+            const m = aria.match(/(?:^|\s)(1er|1ère|1st|2e|2nd|3e\+?|3rd)\s*$/i);
             if (m?.[1]) return m[1].toLowerCase();
           }
         }
@@ -162,7 +162,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
           const idx = nameTrim ? lines.findIndex((l) => l === nameTrim) : -1;
           for (const l of lines.slice(idx + 1)) {
             if (l === nameTrim) continue;
-            if (/^[·•]?\s*(1er|1ère|2e|3e\+?|2nd|3rd)$/i.test(l)) continue;
+            if (/^[·•]?\s*(1er|1ère|1st|2e|2nd|3e\+?|3rd)$/i.test(l)) continue;
             if (/relation au \d/i.test(l)) continue;
             if (l.length < 4) continue;
             return l;
