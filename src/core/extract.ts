@@ -8,6 +8,8 @@ export interface SafeEvalOptions {
   label?: string;
   dumpOnFailure?: boolean;
   dumpMeta?: Record<string, unknown>;
+  /** Argument sérialisable transmis à `fn` dans le contexte navigateur. */
+  arg?: unknown;
 }
 
 /**
@@ -16,7 +18,7 @@ export interface SafeEvalOptions {
  */
 export async function safeEval<R>(
   page: Page,
-  fn: () => R,
+  fn: (arg: any) => R,
   opts: SafeEvalOptions = {},
 ): Promise<R | null> {
   const retries = opts.retries ?? 4;
@@ -30,7 +32,7 @@ export async function safeEval<R>(
         const w = window as unknown as { __name?: (f: unknown) => unknown };
         if (!w.__name) w.__name = (f) => f;
       });
-      return (await page.evaluate(fn)) as R;
+      return (await page.evaluate(fn, opts.arg)) as R;
     } catch (err) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);

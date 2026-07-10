@@ -10,6 +10,7 @@ import type {
   ProfileStatus,
   ProfilePosition,
 } from "../../core/provider.js";
+import { degreeLabel } from "./locale.js";
 
 const LINKEDIN = "linkedin" as const;
 
@@ -80,14 +81,6 @@ export function writeSearchResults(query: string, posts: Post[]): string {
   return path;
 }
 
-const DEGREE_LABELS: Record<string, string> = {
-  "1st": "1er",
-  "2nd": "2e",
-  "3rd": "3e",
-  "out-of-network": "hors réseau",
-  unknown: "?",
-};
-
 export function writePeopleSearchResults(query: string, people: PersonResult[]): string {
   const date = isoDate();
   const path = linkedinPaths.peopleSearchFile(query, date);
@@ -95,7 +88,7 @@ export function writePeopleSearchResults(query: string, people: PersonResult[]):
 
   const rows = people
     .map((p) => {
-      const degree = p.degree ? DEGREE_LABELS[p.degree] ?? p.degree : "?";
+      const degree = degreeLabel(p.degree);
       return `| ${esc(p.name)} | ${degree} | ${esc(p.headline ?? "")} | ${esc(p.location ?? "")} | [profil](${p.profileUrl}) |`;
     })
     .join("\n");

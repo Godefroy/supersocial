@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import type { ConnectionDegree, ProfilePosition, ProfileStatus, InviteResult } from "../../../core/provider.js";
 import { sleep, LoginRequiredError } from "../../../core/throttle.js";
 import { dumpPageState } from "../../../core/debug.js";
+import { DEGREE_TOKEN_ALT, degreeFromToken, LABELS, MATCHES_LABEL_SRC } from "../locale.js";
 
 /**
  * Les sections "Infos" et "Expérience" se rendent en lazy quand elles entrent
@@ -53,7 +54,13 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
   await loadProfileSections(page);
 
   const raw = await page
-    .evaluate(() => {
+    .evaluate((ctx) => {
+      const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+        (aria: string, text: string, spec: unknown) => boolean;
+      const L = ctx.labels;
+      const topcardDegreeRe = new RegExp(`^[·•]\\s*(${ctx.degreeAlt})$`, "i");
+      const ariaDegreeRe = new RegExp(`(?:^|\\s)(${ctx.degreeAlt})\\s*$`, "i");
+      const lineDegreeRe = new RegExp(`^[·•]?\\s*(${ctx.degreeAlt})$`, "i");
       const innerText = (el: Element | null): string =>
         el ? ((el as HTMLElement).innerText ?? "").trim() : "";
 
@@ -111,7 +118,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
           for (const p of ps) {
             if (!isVisible(p)) continue;
             const t = (p.innerText ?? "").trim();
-            const m = t.match(/^[·•]\s*(1er|1ère|1st|2e|2nd|3e\+?|3rd)$/i);
+            const m = t.match(topcardDegreeRe);
             if (m?.[1]) return m[1].toLowerCase();
           }
         }
@@ -121,7 +128,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
           for (const el of ariaElements) {
             const aria = (el.getAttribute("aria-label") ?? "").trim();
             if (!aria.startsWith(nameTrim)) continue;
-            const m = aria.match(/(?:^|\s)(1er|1ère|1st|2e|2nd|3e\+?|3rd)\s*$/i);
+            const m = aria.match(ariaDegreeRe);
             if (m?.[1]) return m[1].toLowerCase();
           }
         }
@@ -162,7 +169,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
           const idx = nameTrim ? lines.findIndex((l) => l === nameTrim) : -1;
           for (const l of lines.slice(idx + 1)) {
             if (l === nameTrim) continue;
-            if (/^[·•]?\s*(1er|1ère|1st|2e|2nd|3e\+?|3rd)$/i.test(l)) continue;
+            if (lineDegreeRe.test(l)) continue;
             if (/relation au \d/i.test(l)) continue;
             if (l.length < 4) continue;
             return l;
@@ -176,31 +183,18 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
       // Logan R., etc.).
       const buttonsInScope = Array.from(scope.querySelectorAll<HTMLElement>("button, a"));
 
-      const hasMessageButton = buttonsInScope.some((el) => {
-        const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-        const text = innerText(el).toLowerCase();
-        return aria.startsWith("envoyer un message à") || aria === "message" || text === "message";
-      });
+      // Libellés localisés (FR + EN + DE) centralisés dans `locale.ts`.
+      const label = (el: Element, spec: unknown): boolean =>
+        matchesLabel(el.getAttribute("aria-label") ?? "", innerText(el), spec);
 
-      const hasConnectButtonVisible = buttonsInScope.some((el) => {
-        const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-        return aria.startsWith("inviter ") || aria === "se connecter";
-      });
-
+      const hasMessageButton = buttonsInScope.some((el) => label(el, L.message));
+      const hasConnectButtonVisible = buttonsInScope.some((el) => label(el, L.connect));
       // Pour invitationPending, on cherche STRICTEMENT dans le Topcard.
       // Sinon le "En attente" d'un Moussa DIAKITE en sidebar nous polluerait.
-      const invitationPending = buttonsInScope.some((el) => {
-        const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-        const text = innerText(el).toLowerCase();
-        return aria.includes("en attente") || text === "en attente" || aria.includes("pending") || text === "pending";
-      });
-
-      // Bouton "Plus" dans le Topcard (cache Se connecter pour 3e degré ou
-      // certains 2e selon le layout).
-      const hasMoreMenu = buttonsInScope.some((el) => {
-        const aria = (el.getAttribute("aria-label") ?? "").trim();
-        return aria === "Plus" || aria.toLowerCase().startsWith("plus d'actions") || aria.toLowerCase().startsWith("more actions");
-      });
+      const invitationPending = buttonsInScope.some((el) => label(el, L.pending));
+      // Bouton "Plus" / "Mehr" dans le Topcard (cache Se connecter pour 3e degré
+      // ou certains 2e selon le layout).
+      const hasMoreMenu = buttonsInScope.some((el) => label(el, L.more));
 
       // Sections "Infos" et "Expérience". Le profil récent est server-driven:
       // chaque carte porte un `componentkey` stable et indépendant de la langue
@@ -314,7 +308,7 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
         invitationPending,
         hasMoreMenu,
       };
-    })
+    }, { degreeAlt: DEGREE_TOKEN_ALT, matchesSrc: MATCHES_LABEL_SRC, labels: LABELS })
     .catch(() => null);
 
   if (!raw) {
@@ -335,10 +329,8 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
   }
 
   const degree: ConnectionDegree = (() => {
-    const t = raw.degreeText;
-    if (t === "1er" || t === "1ère" || t === "1st") return "1st";
-    if (t === "2e" || t === "2nd") return "2nd";
-    if (t === "3e" || t === "3e+" || t === "3rd") return "3rd";
+    const mapped = degreeFromToken(raw.degreeText);
+    if (mapped) return mapped;
     // Heuristique: pas de degré explicite + pas de connect + pas de Plus = hors réseau
     if (!raw.hasConnectButtonVisible && !raw.hasMoreMenu) {
       return "out-of-network";
@@ -420,23 +412,28 @@ export async function sendInvite(
     ) || null;
   }`;
 
+  // Contexte injecté dans les évaluations navigateur du flux invitation:
+  // localisateur du Topcard + matcher de libellés + jeux de libellés (locale.ts).
+  const inviteCtx = { findTopcardSrc: findTopcard, matchesSrc: MATCHES_LABEL_SRC, labels: LABELS };
+
   const preCheck = await page
-    .evaluate((findTopcardSrc) => {
-      const findTopcard = new Function("return (" + findTopcardSrc + ")()") as () => HTMLElement | null;
+    .evaluate((ctx) => {
+      const findTopcard = new Function("return (" + ctx.findTopcardSrc + ")()") as () => HTMLElement | null;
+      const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+        (aria: string, text: string, spec: unknown) => boolean;
+      const L = ctx.labels;
       const topcard = findTopcard();
       if (!topcard) return { pending: false, connected: false, topcardFound: false };
-      const text = (el: Element | null): string =>
-        el ? ((el as HTMLElement).innerText ?? "").toLowerCase().trim() : "";
       const buttons = Array.from(topcard.querySelectorAll<HTMLElement>("button, a"));
-      const has = (pred: (aria: string, t: string) => boolean): boolean =>
-        buttons.some((b) => pred((b.getAttribute("aria-label") ?? "").toLowerCase(), text(b)));
+      const label = (spec: unknown): boolean =>
+        buttons.some((b) => matchesLabel(b.getAttribute("aria-label") ?? "", b.innerText ?? "", spec));
+      // "connected" = bouton Message présent sans bouton connexion.
       return {
-        pending: has((aria, t) => aria.includes("en attente") || t === "en attente" || aria.includes("pending")),
-        connected: has((aria, _) => aria.startsWith("envoyer un message à")) &&
-          !has((aria, t) => aria.startsWith("inviter ") || aria.includes("se connecter") || t === "se connecter"),
+        pending: label(L.pending),
+        connected: label(L.message) && !label(L.connect),
         topcardFound: true,
       };
-    }, findTopcard)
+    }, inviteCtx)
     .catch(() => ({ pending: false, connected: false, topcardFound: false }));
 
   if (!preCheck.topcardFound) {
@@ -454,8 +451,10 @@ export async function sendInvite(
   // Le CTA peut être rendu comme `<a>` ou `<button>` selon le degré et le
   // layout, on scan les deux + tout `[role='button']`.
   const directClicked = await page
-    .evaluate((findTopcardSrc) => {
-      const findTopcard = new Function("return (" + findTopcardSrc + ")()") as () => HTMLElement | null;
+    .evaluate((ctx) => {
+      const findTopcard = new Function("return (" + ctx.findTopcardSrc + ")()") as () => HTMLElement | null;
+      const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+        (aria: string, text: string, spec: unknown) => boolean;
       const topcard = findTopcard();
       if (!topcard) return false;
       const elements = Array.from(
@@ -463,46 +462,36 @@ export async function sendInvite(
       );
       for (const el of elements) {
         if ((el as HTMLButtonElement).disabled) continue;
-        const aria = el.getAttribute("aria-label") ?? "";
-        const ariaLow = aria.toLowerCase();
-        const text = (el.innerText ?? "").toLowerCase().trim();
-        if (
-          ariaLow.startsWith("inviter ") ||
-          ariaLow === "se connecter" ||
-          text === "se connecter"
-        ) {
+        if (matchesLabel(el.getAttribute("aria-label") ?? "", el.innerText ?? "", ctx.labels.connect)) {
           el.click();
           return true;
         }
       }
       return false;
-    }, findTopcard)
+    }, inviteCtx)
     .catch(() => false);
 
   if (!directClicked) {
-    // Tentative 2: ouvrir le menu "Plus" du Topcard, puis cliquer
-    // "Inviter / Se connecter" dans le dropdown qui apparaît (sibling, pas
-    // dans le Topcard).
+    // Tentative 2: ouvrir le menu "Plus" / "Mehr" du Topcard, puis cliquer
+    // "Inviter / Se connecter / Vernetzen" dans le dropdown qui apparaît
+    // (sibling, pas dans le Topcard).
     const moreOpened = await page
-      .evaluate((findTopcardSrc) => {
-        const findTopcard = new Function("return (" + findTopcardSrc + ")()") as () => HTMLElement | null;
+      .evaluate((ctx) => {
+        const findTopcard = new Function("return (" + ctx.findTopcardSrc + ")()") as () => HTMLElement | null;
+        const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+          (aria: string, text: string, spec: unknown) => boolean;
         const topcard = findTopcard();
         if (!topcard) return false;
         const buttons = Array.from(topcard.querySelectorAll<HTMLButtonElement>("button"));
         for (const b of buttons) {
           if (b.disabled) continue;
-          const aria = (b.getAttribute("aria-label") ?? "").trim();
-          if (
-            aria === "Plus" ||
-            aria.toLowerCase().startsWith("plus d'actions") ||
-            aria.toLowerCase().startsWith("more actions")
-          ) {
+          if (matchesLabel(b.getAttribute("aria-label") ?? "", b.innerText ?? "", ctx.labels.more)) {
             b.click();
             return true;
           }
         }
         return false;
-      }, findTopcard)
+      }, inviteCtx)
       .catch(() => false);
 
     if (!moreOpened) {
@@ -514,27 +503,22 @@ export async function sendInvite(
     await sleep(800);
 
     const menuClicked = await page
-      .evaluate(() => {
+      .evaluate((ctx) => {
+        const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+          (aria: string, text: string, spec: unknown) => boolean;
         const items = Array.from(
           document.querySelectorAll<HTMLElement>(
             "[role='menu'] [role='menuitem'], [role='menu'] button, [role='menu'] [role='button'], .artdeco-dropdown__content button, .artdeco-dropdown__content [role='button']",
           ),
         );
         for (const el of items) {
-          const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-          const text = (el.innerText ?? "").toLowerCase().trim();
-          if (
-            aria.startsWith("inviter ") ||
-            text.startsWith("inviter ") ||
-            aria.includes("se connecter") ||
-            text.includes("se connecter")
-          ) {
+          if (matchesLabel(el.getAttribute("aria-label") ?? "", el.innerText ?? "", ctx.labels.connect)) {
             (el as HTMLElement).click();
             return true;
           }
         }
         return false;
-      })
+      }, inviteCtx)
       .catch(() => false);
 
     if (!menuClicked) {
@@ -553,23 +537,21 @@ export async function sendInvite(
   // shadow root.
   const inviteUiReady = await page
     .waitForFunction(
-      () => {
+      (ctx) => {
+        const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+          (aria: string, text: string, spec: unknown) => boolean;
         const outlet = document.getElementById("interop-outlet");
         const root = outlet?.shadowRoot;
         if (!root) return false;
         const els = Array.from(root.querySelectorAll<HTMLElement>("button, a, [role='button']"));
+        // Modale prête = bouton d'envoi (ou "Ajouter une note") présent.
         return els.some((el) => {
-          const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-          const text = (el.innerText ?? "").toLowerCase().trim();
-          return (
-            aria.includes("envoyer") ||
-            text.includes("envoyer") ||
-            aria.includes("ajouter une note") ||
-            text.includes("ajouter une note")
-          );
+          const aria = el.getAttribute("aria-label") ?? "";
+          const text = el.innerText ?? "";
+          return matchesLabel(aria, text, ctx.labels.sendCore) || matchesLabel(aria, text, ctx.labels.addNote);
         });
       },
-      null,
+      inviteCtx,
       { timeout: 10_000 },
     )
     .then(() => true)
@@ -585,21 +567,21 @@ export async function sendInvite(
     // Cliquer "Ajouter une note" pour révéler le textarea (la modale ouvre
     // par défaut sur le choix "Ajouter une note" / "Envoyer sans note").
     await page
-      .evaluate(() => {
+      .evaluate((ctx) => {
+        const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+          (aria: string, text: string, spec: unknown) => boolean;
         const root = document.getElementById("interop-outlet")?.shadowRoot;
         if (!root) return false;
         const els = Array.from(root.querySelectorAll<HTMLElement>("button, a, [role='button']"));
         for (const el of els) {
           if ((el as HTMLButtonElement).disabled) continue;
-          const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-          const text = (el.innerText ?? "").toLowerCase().trim();
-          if (aria.includes("ajouter une note") || text.includes("ajouter une note") || text.includes("add a note")) {
+          if (matchesLabel(el.getAttribute("aria-label") ?? "", el.innerText ?? "", ctx.labels.addNote)) {
             el.click();
             return true;
           }
         }
         return false;
-      })
+      }, inviteCtx)
       .catch(() => false);
     await sleep(800);
 
@@ -630,40 +612,29 @@ export async function sendInvite(
 
   // Envoyer: cherche dans le shadow root, scan button/a/[role=button].
   const sendClicked = await page
-    .evaluate(() => {
+    .evaluate((ctx) => {
+      const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+        (aria: string, text: string, spec: unknown) => boolean;
       const root = document.getElementById("interop-outlet")?.shadowRoot;
       if (!root) return false;
       const els = Array.from(root.querySelectorAll<HTMLElement>("button, a, [role='button']"));
+      // Priorité au bouton primaire (classe artdeco) portant un libellé d'envoi.
       const primary = els.find((el) => {
         if ((el as HTMLButtonElement).disabled) return false;
-        const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-        const text = (el.innerText ?? "").toLowerCase().trim();
         const cls = el.className.toLowerCase();
         return (
           (cls.includes("primary") || cls.includes("--primary")) &&
-          (aria.includes("envoyer") || text.includes("envoyer") || text.includes("send"))
+          matchesLabel(el.getAttribute("aria-label") ?? "", el.innerText ?? "", ctx.labels.sendCore)
         );
       });
       if (primary) { primary.click(); return true; }
       const generic = els.find((el) => {
         if ((el as HTMLButtonElement).disabled) return false;
-        const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-        const text = (el.innerText ?? "").toLowerCase().trim();
-        return (
-          aria === "envoyer" ||
-          aria.includes("envoyer maintenant") ||
-          aria.includes("envoyer sans note") ||
-          text === "envoyer" ||
-          text.includes("envoyer maintenant") ||
-          text.includes("envoyer sans note") ||
-          text === "send" ||
-          text.includes("send now") ||
-          text.includes("send without")
-        );
+        return matchesLabel(el.getAttribute("aria-label") ?? "", el.innerText ?? "", ctx.labels.send);
       });
       if (generic) { generic.click(); return true; }
       return false;
-    })
+    }, inviteCtx)
     .catch(() => false);
 
   if (!sendClicked) {
@@ -688,17 +659,20 @@ export async function sendInvite(
   // Confirmer: le shadow root se vide (plus de textarea/boutons d'envoi).
   const sentConfirmed = await page
     .waitForFunction(
-      () => {
+      (ctx) => {
+        const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
+          (aria: string, text: string, spec: unknown) => boolean;
         const root = document.getElementById("interop-outlet")?.shadowRoot;
         if (!root) return true;
         const els = Array.from(root.querySelectorAll<HTMLElement>("button, a, [role='button']"));
+        // Envoi confirmé quand plus aucun bouton d'envoi / d'ajout de note ne reste.
         return !els.some((el) => {
-          const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-          const text = (el.innerText ?? "").toLowerCase().trim();
-          return aria.includes("envoyer") || text.includes("envoyer") || aria.includes("ajouter une note");
+          const aria = el.getAttribute("aria-label") ?? "";
+          const text = el.innerText ?? "";
+          return matchesLabel(aria, text, ctx.labels.sendCore) || matchesLabel(aria, text, ctx.labels.addNote);
         });
       },
-      null,
+      inviteCtx,
       { timeout: 10_000 },
     )
     .then(() => true)

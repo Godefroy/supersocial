@@ -5,6 +5,7 @@ import { sleep, LinkedInDmRestrictedError, LoginRequiredError } from "../../../c
 import { safeEval } from "../../../core/extract.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { cleanProfileUrl, extractProfileUrn } from "../profile-url.js";
+import { DEGREE_TOKEN_ALT, degreeFromToken, LABELS } from "../locale.js";
 
 const MESSAGING_BASE = "https://www.linkedin.com/messaging/thread/";
 const PROFILE_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/([^/?#]+)/i;
@@ -295,7 +296,9 @@ interface ProfileIdentity {
  */
 async function extractProfileIdentity(page: Page): Promise<ProfileIdentity> {
   const result = await page
-    .evaluate(() => {
+    .evaluate((degreeAlt) => {
+      const topcardDegreeRe = new RegExp(`^[·•]\\s*(${degreeAlt})$`, "i");
+      const ariaDegreeRe = new RegExp(`(?:^|\\s)(${degreeAlt})\\s*$`, "i");
       const anchors = Array.from(
         document.querySelectorAll<HTMLAnchorElement>('a[href*="/messaging/compose/"]'),
       );
@@ -349,7 +352,7 @@ async function extractProfileIdentity(page: Page): Promise<ProfileIdentity> {
         for (const p of ps) {
           if (!isVisible(p)) continue;
           const t = (p.innerText ?? "").trim();
-          const m = t.match(/^[·•]\s*(1er|1ère|2e|3e\+?|2nd|3rd)$/i);
+          const m = t.match(topcardDegreeRe);
           if (m?.[1]) { degreeText = m[1].toLowerCase(); break; }
         }
       }
@@ -359,21 +362,18 @@ async function extractProfileIdentity(page: Page): Promise<ProfileIdentity> {
         for (const el of ariaElements) {
           const aria = (el.getAttribute("aria-label") ?? "").trim();
           if (!aria.startsWith(nameTrim)) continue;
-          const m = aria.match(/(?:^|\s)(1er|1ère|2e|3e\+?|2nd|3rd)\s*$/i);
+          const m = aria.match(ariaDegreeRe);
           if (m?.[1]) { degreeText = m[1].toLowerCase(); break; }
         }
       }
       return { profileUrn, displayName, degreeText };
-    })
+    }, DEGREE_TOKEN_ALT)
     .catch(() => ({ profileUrn: null, displayName: null, degreeText: "" }));
   return result ?? { profileUrn: null, displayName: null, degreeText: "" };
 }
 
 function mapDegreeText(text: string): ConnectionDegree {
-  if (text === "1er" || text === "1ère" || text === "1st") return "1st";
-  if (text === "2e" || text === "2nd") return "2nd";
-  if (text === "3e" || text === "3e+" || text === "3rd") return "3rd";
-  return "unknown";
+  return degreeFromToken(text) ?? "unknown";
 }
 
 /**
@@ -993,10 +993,12 @@ export async function sendMessageInOpenThread(
   await sleep(600);
 
   const sendClicked = await page
-    .evaluate(() => {
+    .evaluate((sendTokens) => {
       // Variante moderne: bouton icon-only `.msg-form__send-btn` (svg
       // `data-test-icon="send-privately-small"`), pas d'aria-label ni de texte.
-      // Variante legacy: bouton avec aria-label/text "Envoyer"/"Send".
+      // Variante legacy: bouton avec aria-label/text "Envoyer"/"Send"/"Senden".
+      // Tokens localisés injectés depuis `locale.ts` (LABELS.sendCore); pas de
+      // `new Function` ici pour rester à l'abri d'une CSP stricte sur la messagerie.
       const direct = Array.from(
         document.querySelectorAll<HTMLButtonElement>(
           "button.msg-form__send-btn, button.msg-form__send-button",
@@ -1015,18 +1017,13 @@ export async function sendMessageInOpenThread(
         if (b.disabled) continue;
         const aria = (b.getAttribute("aria-label") ?? "").toLowerCase();
         const text = (b.innerText ?? "").toLowerCase().trim();
-        if (
-          aria.includes("envoyer") ||
-          aria.includes("send") ||
-          text === "envoyer" ||
-          text === "send"
-        ) {
+        if (sendTokens.some((tok) => aria.includes(tok) || text.includes(tok))) {
           b.click();
           return true;
         }
       }
       return false;
-    })
+    }, LABELS.sendCore.textIncludes)
     .catch(() => false);
 
   if (!sendClicked) {

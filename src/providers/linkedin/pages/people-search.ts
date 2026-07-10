@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
-import type { ConnectionDegree, NetworkFilter, PersonResult } from "../../../core/provider.js";
+import type { NetworkFilter, PersonResult } from "../../../core/provider.js";
 import { safeEval } from "../../../core/extract.js";
+import { DEGREE_TOKEN_ALT, degreeFromToken } from "../locale.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { scrollToBottom, scrollToTop } from "../page-ops.js";
 import { sleep, LoginRequiredError } from "../../../core/throttle.js";
@@ -18,15 +19,6 @@ function buildSearchUrl(query: string, network: NetworkFilter, pageNum: number):
   else if (network === "2nd") params.set("network", '["S"]');
   if (pageNum > 1) params.set("page", String(pageNum));
   return `${PEOPLE_SEARCH_URL}?${params.toString()}`;
-}
-
-function mapDegree(text: string | null): ConnectionDegree | undefined {
-  if (!text) return undefined;
-  const t = text.toLowerCase();
-  if (t.includes("1er") || t.includes("1ère") || t.includes("1st")) return "1st";
-  if (t.includes("2e") || t.includes("2nd")) return "2nd";
-  if (t.includes("3e") || t.includes("3rd")) return "3rd";
-  return undefined;
 }
 
 interface RawPerson {
@@ -54,19 +46,19 @@ interface RawPerson {
 async function extractPeopleOnPage(page: Page): Promise<RawPerson[]> {
   const raw = await safeEval<RawPerson[]>(
     page,
-    () => {
+    (degreeAlt: string) => {
       const text = (el: Element | null): string =>
         el ? ((el as HTMLElement).innerText ?? "").trim() : "";
 
-      // Token de degré LinkedIn: petit ensemble fermé et stable (FR + EN), pas
-      // une liste de mots-clés ouverte.
-      const DEGREE_LINE_RE = /^[·•\s]*(1er|1ère|1st|2e|2nd|3e\+?|3rd)\s*$/i;
-      const stripDegree = (s: string): string =>
-        s.replace(/\s*[·•]\s*(1er|1ère|1st|2e|2nd|3e\+?|3rd)\b.*$/i, "").trim();
-      const degreeFrom = (s: string): string | null => {
-        const m = s.match(/(?:^|[·•\s])(1er|1ère|1st|2e|2nd|3e\+?|3rd)(?:\b|$)/i);
-        return m?.[1] ?? null;
-      };
+      // Token de degré: ensemble fermé FR + EN + DE injecté depuis `locale.ts`
+      // (source unique). L'allemand rend "1." / "2." / "3.+"; le lookahead
+      // `(?![\p{L}\p{N}])` borne le token sans dépendre du `\b` (qui échoue après
+      // le point final allemand).
+      const DEGREE_LINE_RE = new RegExp(`^[·•\\s]*(${degreeAlt})\\s*$`, "i");
+      const stripRe = new RegExp(`\\s*[·•]\\s*(${degreeAlt})(?![\\p{L}\\p{N}]).*$`, "iu");
+      const stripDegree = (s: string): string => s.replace(stripRe, "").trim();
+      const degreeFromRe = new RegExp(`(?:^|[·•\\s])(${degreeAlt})(?![\\p{L}\\p{N}])`, "iu");
+      const degreeFrom = (s: string): string | null => s.match(degreeFromRe)?.[1] ?? null;
 
       // Scope au conteneur de résultats principal pour éviter le bruit (nav
       // latérale, footer, suggestions).
@@ -175,13 +167,13 @@ async function extractPeopleOnPage(page: Page): Promise<RawPerson[]> {
 
       return out;
     },
-    { label: "linkedin-people-search-extract" },
+    { label: "linkedin-people-search-extract", arg: DEGREE_TOKEN_ALT },
   );
   return raw ?? [];
 }
 
 function materialize(r: RawPerson): PersonResult {
-  const degree = mapDegree(r.degreeText);
+  const degree = degreeFromToken(r.degreeText);
   return {
     name: r.name,
     profileUrl: r.url,
