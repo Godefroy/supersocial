@@ -3,6 +3,7 @@ import { config } from "./config.js";
 
 export type ActionType =
   | "invite"
+  | "invite_accept"
   | "dm"
   | "profile_view"
   | "like"
@@ -20,6 +21,9 @@ interface ProfileSpec {
 
 const BASE_PROFILES: Record<ActionType, ProfileSpec> = {
   invite: { meanMs: 120_000, stdMs: 60_000, minMs: 30_000, maxMs: 400_000 },
+  // Accepter se fait naturellement en rafale depuis la liste des invitations,
+  // donc des pauses courtes, sans commune mesure avec l'envoi d'invitations.
+  invite_accept: { meanMs: 15_000, stdMs: 8_000, minMs: 5_000, maxMs: 60_000 },
   dm: { meanMs: 180_000, stdMs: 80_000, minMs: 45_000, maxMs: 500_000 },
   profile_view: { meanMs: 35_000, stdMs: 20_000, minMs: 10_000, maxMs: 120_000 },
   like: { meanMs: 25_000, stdMs: 15_000, minMs: 8_000, maxMs: 80_000 },

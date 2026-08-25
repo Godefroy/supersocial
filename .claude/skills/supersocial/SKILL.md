@@ -1,6 +1,6 @@
 ---
 name: supersocial
-description: Automatiser LinkedIn (chercher des posts, chercher des personnes parmi ses relations, lire/envoyer des DM, boîte d'envoi, demander des connexions avec ou sans note, lire le degré de relation d'un profil, lire/poster des commentaires, synchroniser l'inventaire de ses posts). À utiliser dès que l'utilisateur demande une action LinkedIn.
+description: Automatiser LinkedIn (chercher des posts, chercher des personnes parmi ses relations, lire/envoyer des DM, boîte d'envoi, demander des connexions avec ou sans note, accepter les demandes de connexion reçues, lire le degré de relation d'un profil, lire/poster des commentaires, synchroniser l'inventaire de ses posts). À utiliser dès que l'utilisateur demande une action LinkedIn.
 ---
 
 # supersocial
@@ -29,6 +29,9 @@ npm run dev -- linkedin invite:send [-n N] [--dry-run]
 npm run dev -- linkedin invite:check [-n N]
 npm run dev -- linkedin invite:retry [ids...] [--all] [--match <motif>]
 npm run dev -- linkedin invite:cancel <id>
+
+# Demandes de connexion reçues (accepte tout, run quotidien)
+npm run dev -- linkedin invite:accept [-n N] [--dry-run]
 
 # Conversations privées
 npm run dev -- linkedin thread:sync <url>
@@ -96,6 +99,12 @@ Cache disque: chaque profil récupéré est écrit dans `data/linkedin/profiles/
 Symétrique à l'outbox DM. Les invitations sont stockées en markdown dans `data/linkedin/invitations/` avec sous-dossiers `pending/`, `sent/`, `accepted/`, `failed/`. Le body du fichier contient la note (vide pour invitation simple).
 
 `invite:add <url> [--note <body>] [--then-dm <body>]` queue une invitation. Avec `--then-dm`, queue aussi un DM dans l'outbox qui ne partira que quand la cible sera passée 1ère relation. `invite:send` traite le batch en respectant la limite invite (15/jour) avec `humanPause("invite")` entre chaque. Les `already-pending` côté LinkedIn passent direct en `sent`, les `already-connected` passent direct en `accepted`. `invite:check` re-vérifie l'état des invitations en `sent` et déplace en `accepted` quand la cible est devenue 1ère relation. `invite:retry` rejoue les `failed`, `invite:cancel` retire une `pending`.
+
+## Demandes de connexion reçues
+
+`invite:accept` ouvre le gestionnaire d'invitations (`/mynetwork/invitation-manager/`, hors feed), déroule la liste et accepte toutes les demandes reçues, avec ou sans note, sans filtre. Limite journalière `invite_accept` (30) et pause courte entre chaque acceptation. `--dry-run` liste les demandes (nom, poste/boîte, note) sans rien accepter. Une carte déjà disparue de la liste est comptée `absente` et ignorée.
+
+Chaque acceptation est tracée dans `data/linkedin/invitations/received/<date>-<slug>.md` (nom, URL profil, URN d'invitation, poste, relations en commun, note en body). L'écriture est idempotente par slug, donc un même profil n'est jamais tracé deux fois.
 
 ## Workflow chaîné invite → DM
 

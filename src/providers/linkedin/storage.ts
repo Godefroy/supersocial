@@ -43,6 +43,7 @@ export const linkedinPaths = {
   invitationsSentDir: () => join(base(), "invitations", "sent"),
   invitationsAcceptedDir: () => join(base(), "invitations", "accepted"),
   invitationsFailedDir: () => join(base(), "invitations", "failed"),
+  invitationsReceivedDir: () => join(base(), "invitations", "received"),
 
   commentsDir: () => join(base(), "comments"),
   commentsFile: (postId: string) => join(base(), "comments", `${slugify(postId)}.md`),

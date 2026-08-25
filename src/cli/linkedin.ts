@@ -48,8 +48,9 @@ import {
   MIN_HOURS_BETWEEN_INVITATION_CHECKS,
   type Invitation,
   type InvitationStatus,
+  recordAcceptedInvitation,
 } from "../providers/linkedin/invitations.js";
-import { getTodayCount, getDailyLimits, type CountedAction } from "../core/throttle-state.js";
+import { getTodayCount, getDailyLimits, ThrottleLimitError, type CountedAction } from "../core/throttle-state.js";
 import { humanPause, RateLimitHitError, LinkedInDmRestrictedError } from "../core/throttle.js";
 import type { SearchOptions } from "../core/provider.js";
 
@@ -944,6 +945,94 @@ export function registerLinkedInCommands(program: Command): void {
       });
 
       console.log(`\nBilan: ${accepted} acceptée(s), ${stillPending} toujours en attente, ${expired.length + nowFailed} expirée(s), ${cascadedDms} DM cascadé(s), ${errors} erreur(s).`);
+    });
+
+  linkedin
+    .command("invite:accept")
+    .description("Accepter les demandes de connexion reçues (toutes, avec ou sans note). Pensé pour un run quotidien.")
+    .option("-n, --count <n>", "nombre max d'acceptations cette session", (v) => parseInt(v, 10))
+    .option("--dry-run", "ne rien accepter, juste lister les demandes reçues")
+    .action(async (opts: { count?: number; dryRun?: boolean }) => {
+      const limits = getDailyLimits();
+      const todayCount = getTodayCount("invite_accept");
+      const remainingToday = Math.max(0, limits.invite_accept - todayCount);
+      // Ce qu'on demande à la page de charger: inutile de dérouler 80 cartes
+      // pour en accepter 30, la liste se charge par lots au scroll.
+      const capacity = opts.dryRun
+        ? Math.min(opts.count ?? limits.invite_accept, limits.invite_accept)
+        : Math.min(opts.count ?? remainingToday, remainingToday);
+
+      await withProvider(async (p) => {
+        const received = await p.listReceivedInvitations({ targetCount: Math.max(capacity, 1) });
+        if (received.length === 0) {
+          console.log("Aucune demande de connexion en attente.");
+          return;
+        }
+
+        const targetCount = Math.min(capacity, received.length);
+        console.log(
+          `Demandes reçues: ${received.length} | Acceptées aujourd'hui: ${todayCount}/${limits.invite_accept} | Capacité restante: ${remainingToday} | Cette session: ${targetCount}`,
+        );
+
+        if (opts.dryRun) {
+          console.log("\n[dry-run] Demandes qui seraient acceptées:");
+          for (const inv of received.slice(0, targetCount)) {
+            console.log(`  ${inv.name}${inv.headline ? ` | ${inv.headline}` : ""} | ${inv.profileUrl}`);
+            if (inv.note) console.log(`    Note: ${formatMessagePreview(inv.note, 100)}`);
+          }
+          return;
+        }
+        if (targetCount === 0) {
+          console.log("Rien à traiter (limite atteinte ou count=0).");
+          return;
+        }
+
+        let accepted = 0;
+        let notFound = 0;
+        let failed = 0;
+
+        for (const inv of received.slice(0, targetCount)) {
+          const done = accepted + notFound + failed;
+          console.log(`\n[${done + 1}/${targetCount}] ${inv.name}${inv.headline ? ` — ${inv.headline}` : ""}`);
+          console.log(`  ${inv.profileUrl}`);
+          if (inv.note) console.log(`  Note: ${formatMessagePreview(inv.note, 100)}`);
+          try {
+            const result = await p.acceptReceivedInvitation(inv);
+            if (result.status === "accepted") {
+              const record = recordAcceptedInvitation({
+                name: inv.name,
+                profileUrl: inv.profileUrl,
+                ...(inv.invitationUrn ? { invitationUrn: inv.invitationUrn } : {}),
+                ...(inv.headline ? { headline: inv.headline } : {}),
+                ...(inv.mutual ? { mutual: inv.mutual } : {}),
+                ...(inv.note ? { note: inv.note } : {}),
+              });
+              console.log(`  ✓ acceptée${record.alreadyKnown ? "" : ` → ${record.file}`}`);
+              accepted++;
+            } else if (result.status === "not-found") {
+              console.log(`  ↺ carte absente de la liste, ignorée (${result.reason ?? ""})`);
+              notFound++;
+            } else {
+              console.error(`  ✗ non confirmée: ${result.reason ?? result.status}`);
+              failed++;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`  ✗ erreur: ${msg}`);
+            failed++;
+            if (err instanceof RateLimitHitError) {
+              console.error(`RateLimitHitError détecté. Arrêt immédiat.`);
+              break;
+            }
+            if (err instanceof ThrottleLimitError) break;
+          }
+          if (accepted + notFound + failed < targetCount) {
+            await humanPause("invite_accept");
+          }
+        }
+
+        console.log(`\nBilan: ${accepted} acceptée(s), ${notFound} absente(s), ${failed} échec(s).`);
+      });
     });
 
   linkedin

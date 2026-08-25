@@ -12,6 +12,8 @@ import type {
   InviteResult,
   PeopleSearchOptions,
   PersonResult,
+  ReceivedInvitation,
+  AcceptInvitationResult,
 } from "../../core/provider.js";
 import type { ProviderId } from "../../core/storage.js";
 import { launchPersistentChrome, closeContext } from "../../core/browser.js";
@@ -38,6 +40,10 @@ import {
   sendFromComposeUrl,
 } from "./pages/messaging.js";
 import { readProfileStatus, sendInvite } from "./pages/profile.js";
+import {
+  readReceivedInvitations,
+  acceptReceivedInvitation,
+} from "./pages/invitation-manager.js";
 
 export class LinkedInProvider implements SocialProvider {
   readonly id: ProviderId = "linkedin";
@@ -248,6 +254,24 @@ export class LinkedInProvider implements SocialProvider {
     const opt: { note?: string } = {};
     if (opts.note) opt.note = opts.note;
     const result = await sendInvite(page, url, opt);
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    return result;
+  }
+
+  async listReceivedInvitations(opts: { targetCount?: number } = {}): Promise<ReceivedInvitation[]> {
+    checkAndRecord("read");
+    const page = await this.ensurePage();
+    const invitations = await readReceivedInvitations(page, opts);
+    if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
+    await checkPageForRedFlags(page);
+    return invitations;
+  }
+
+  async acceptReceivedInvitation(invitation: ReceivedInvitation): Promise<AcceptInvitationResult> {
+    const page = await this.ensurePage();
+    checkAndRecord("invite_accept");
+    const result = await acceptReceivedInvitation(page, invitation);
     if (this.killSwitch) assertKillSwitchOk(this.killSwitch);
     await checkPageForRedFlags(page);
     return result;

@@ -317,3 +317,44 @@ export function recordDirectInvitation(params: {
   if (status === "accepted") inv.acceptedAt = createdAt;
   return inv;
 }
+
+/**
+ * Trace une invitation reçue et acceptée, dans `invitations/received/`. Un
+ * fichier par personne, nommé `<date>-<slug>.md`, ce qui rend l'écriture
+ * idempotente: si le slug est déjà tracé (peu importe la date), on ne réécrit
+ * rien et on signale l'existant. Cette trace n'est pas une file d'attente, elle
+ * sert d'historique des nouvelles relations entrantes.
+ */
+export function recordAcceptedInvitation(params: {
+  name: string;
+  profileUrl: string;
+  invitationUrn?: string;
+  headline?: string;
+  mutual?: string;
+  note?: string;
+}): { file: string; alreadyKnown: boolean } {
+  const dir = linkedinPaths.invitationsReceivedDir();
+  mkdirSync(dir, { recursive: true });
+
+  const slug = slugify(deriveLabelFromRecipient(params.profileUrl)) || "invitation";
+  const suffix = `-${slug}.md`;
+  const existing = readdirSync(dir).find((f) => f.endsWith(suffix));
+  if (existing) return { file: join(dir, existing), alreadyKnown: true };
+
+  const acceptedAt = new Date().toISOString();
+  const filepath = join(dir, `${acceptedAt.slice(0, 10)}${suffix}`);
+  writeMarkdown(filepath, {
+    frontmatter: {
+      provider: "linkedin",
+      kind: "received_invitation",
+      name: params.name,
+      profile_url: params.profileUrl,
+      ...(params.invitationUrn ? { invitation_urn: params.invitationUrn } : {}),
+      ...(params.headline ? { headline: params.headline } : {}),
+      ...(params.mutual ? { mutual: params.mutual } : {}),
+      accepted_at: acceptedAt,
+    },
+    body: params.note ? `${params.note}\n` : "",
+  });
+  return { file: filepath, alreadyKnown: false };
+}

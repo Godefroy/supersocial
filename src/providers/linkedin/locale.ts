@@ -109,6 +109,13 @@ export const LABELS = {
     textExact: ["envoyer", "send", "senden"],
     textIncludes: ["envoyer maintenant", "envoyer sans note", "send now", "send without", "ohne notiz senden"],
   },
+  // Accepter une demande de connexion reçue / Accept / Annehmen. L'aria-label
+  // porte en général le nom ("Accepter l'invitation de X", "Accept X's
+  // invitation"), le texte visible est le verbe seul.
+  accept: {
+    ariaIncludes: ["accepter", "accept", "annehmen", "akzeptieren"],
+    textExact: ["accepter", "accept", "annehmen", "akzeptieren"],
+  },
   // Noyau "envoyer" (sous-chaîne), pour le bouton primaire et les checks de
   // présence/absence (modale prête, envoi confirmé, composer legacy).
   sendCore: {

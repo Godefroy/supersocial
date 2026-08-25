@@ -16,6 +16,7 @@ export type CountedAction = ActionType;
  */
 const DAILY_LIMITS: Record<CountedAction, number> = {
   invite: 15,
+  invite_accept: 30,
   dm: 40,
   profile_view: 80,
   like: 30,

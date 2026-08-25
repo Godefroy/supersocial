@@ -23,3 +23,8 @@
 # `invite --then-dm` qui debloque les DMs en attente (outbox:send skip tant
 # que la cible n'est pas 1ere relation, fire automatiquement quand ca matche).
 0 9 * * 1-5 __REPO__/scripts/cron.sh linkedin invite:check
+
+# Demandes de connexion recues: 1 fois par jour, accepte tout (avec ou sans
+# note). Cree de nouvelles 1eres relations, donc a placer avant le creneau
+# outbox:send de l'apres-midi qui peut alors debloquer des DM en attente.
+30 11 * * 1-5 __REPO__/scripts/cron.sh linkedin invite:accept

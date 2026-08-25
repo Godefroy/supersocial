@@ -157,6 +157,32 @@ export interface InviteResult {
   withNote?: boolean;
 }
 
+/** Invitation reçue en attente, telle qu'affichée dans le gestionnaire d'invitations. */
+export interface ReceivedInvitation {
+  /** Nom affiché de la personne qui invite. */
+  name: string;
+  /** URL canonique `/in/<slug>/`. */
+  profileUrl: string;
+  /** URN de l'invitation (`urn:li:invitation:<id>`), identifiant de la carte quand LinkedIn l'expose. */
+  invitationUrn?: string;
+  /** Sous-titre de la carte, en général le poste et l'entreprise. */
+  headline?: string;
+  /** Ligne des relations en commun ("X et 117 relations en commun"). */
+  mutual?: string;
+  /** Note jointe à l'invitation, absente pour une invitation simple. */
+  note?: string;
+}
+
+export interface AcceptInvitationResult {
+  /**
+   * accepted: carte acceptée et retirée de la liste.
+   * not-found: aucune carte pour ce profil sur la page (déjà traitée ailleurs, ou retirée).
+   * not-confirmed: bouton cliqué mais la carte est toujours là, à revérifier au prochain run.
+   */
+  status: "accepted" | "not-found" | "not-confirmed";
+  reason?: string;
+}
+
 export interface SocialProvider {
   readonly id: ProviderId;
 
@@ -173,6 +199,10 @@ export interface SocialProvider {
   getProfileStatus(url: string): Promise<ProfileStatus>;
   /** Envoie une demande de connexion, optionnellement avec une note personnalisée. */
   sendConnectionInvite(url: string, opts?: { note?: string }): Promise<InviteResult>;
+  /** Liste les demandes de connexion reçues en attente, en déroulant la liste jusqu'à `targetCount` cartes. */
+  listReceivedInvitations(opts?: { targetCount?: number }): Promise<ReceivedInvitation[]>;
+  /** Accepte une demande de connexion reçue, telle que retournée par `listReceivedInvitations`. */
+  acceptReceivedInvitation(invitation: ReceivedInvitation): Promise<AcceptInvitationResult>;
   listComments(postId: string): Promise<Comment[]>;
   sendComment(postId: string, body: string): Promise<Comment>;
   publishPost(opts: PublishOptions): Promise<Post>;
