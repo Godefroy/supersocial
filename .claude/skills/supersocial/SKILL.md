@@ -34,12 +34,12 @@ npm run dev -- linkedin invite:cancel <id>
 npm run dev -- linkedin invite:accept [-n N] [--dry-run]
 
 # Conversations privées
-npm run dev -- linkedin thread:sync <url>
+npm run dev -- linkedin thread:sync <url...> [--rewrite] [--from-file <path>]
 npm run dev -- linkedin dm <url> <body> [--yes] [--dry-run] [--force] [--queue]
 npm run dev -- linkedin conversations:rename
 
 # Boîte d'envoi (préparer des messages, envoyer en batch sous throttling)
-npm run dev -- linkedin outbox:add <url> <body> [--label <label>]
+npm run dev -- linkedin outbox:add <url> <body> [--label <label>] [--after <date>]
 npm run dev -- linkedin outbox:list [--status pending|sent|failed|all]
 npm run dev -- linkedin outbox:send [-n N] [--dry-run]
 npm run dev -- linkedin outbox:retry [ids...] [--all] [--match <motif>]
@@ -70,7 +70,7 @@ Opérateurs booléens sur la recherche gratuite (contrainte LinkedIn, pas supers
 
 Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=<urn>` et dérive le thread ID depuis les `data-event-urn` des messages chargés (LinkedIn affiche les messages du thread existant dans le panneau droit, même si l'URL du navigateur ne change pas). S'il n'y a pas encore de thread, le resolver retourne une `composeUrl` et l'envoi se fait en mode neuf.
 
-`thread:sync <url>` synchronise l'historique et le stocke dans `data/linkedin/conversations/`.
+`thread:sync <url...>` synchronise l'historique et le stocke dans `data/linkedin/conversations/`. Plusieurs cibles passent dans une seule session, `--from-file` lit la liste dans un fichier. `--rewrite` réécrit le fichier au lieu de compléter l'historique.
 
 `dm <url> <body>` essaie de charger l'historique d'abord. Si thread existant : affiche les 3 derniers messages, refuse le doublon (sauf `--force`), demande confirmation (sauf `--yes`), envoie, re-synchronise. Si thread neuf : envoi direct via compose, pas de dédup possible.
 
@@ -81,6 +81,8 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 ## Boîte d'envoi
 
 `outbox:add` pose un markdown dans `data/linkedin/outbox/pending/`. `outbox:send` traite les items en attente, un par un, avec `humanPause("dm")` entre chaque, et s'arrête sur `RateLimitHitError`. Nombre d'envois plafonné par la capacité journalière restante (`getDailyLimits().dm - getTodayCount("dm")`). Les items envoyés passent dans `sent/`, ceux en erreur dans `failed/`. Pour rejouer des items en échec : `outbox:retry --all` (tout) ou `outbox:retry <id1> <id2>` (sélection), avec `--match <motif>` pour filtrer par regex sur le message d'erreur.
+
+`--after <date>` programme un item (`2026-08-27`, `2026-08-27T10:00`, `+2d`, `+6h`). Il reste en `pending` et `outbox:send` l'ignore jusqu'à sa date, en annonçant combien d'items sont programmés et à quand. Sert à étaler une campagne sur plusieurs jours et à laisser le cron la vider.
 
 Erreurs transitoires : une erreur d'infra (réseau coupé/changé, navigation, contexte navigateur fermé, timeout) laisse l'item en `pending` au lieu de le passer en `failed`, donc il repart automatiquement au prochain `outbox:send` sans `outbox:retry` manuel. Seules les vraies erreurs (refus LinkedIn, etc.) vont en `failed`.
 

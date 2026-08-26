@@ -307,10 +307,20 @@ function resolveConversationPath(conv: Conversation): { path: string; slug: stri
   return { path: linkedinPaths.conversationFile(slug), slug };
 }
 
-export function writeConversation(conv: Conversation, messages: Message[]): string {
+/**
+ * Écrit une conversation en append-only: seuls les messages dont le msg-id est
+ * absent du fichier sont ajoutés. `rewrite` repart du fichier vide, ce qui est
+ * le seul moyen de corriger un historique déjà stocké (attribution d'un
+ * message, corps tronqué) puisque les msg-id, eux, ne changent pas.
+ */
+export function writeConversation(
+  conv: Conversation,
+  messages: Message[],
+  opts: { rewrite?: boolean } = {},
+): string {
   const { path, slug } = resolveConversationPath(conv);
 
-  const existing = readMarkdown<Record<string, unknown>>(path);
+  const existing = opts.rewrite ? null : readMarkdown<Record<string, unknown>>(path);
   const seen = new Set<string>();
   if (existing) {
     const m = existing.body.match(/<!-- msg-id:([^ ]+) -->/g) ?? [];

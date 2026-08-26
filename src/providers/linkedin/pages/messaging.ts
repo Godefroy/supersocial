@@ -536,7 +536,10 @@ export async function openAndLoadThread(
 
   await sleep(1500);
 
-  // Scroll up phase: LinkedIn lazy-loads l'historique quand on remonte
+  // Scroll up phase: LinkedIn lazy-loads l'historique quand on remonte. Un
+  // thread long peut mettre plusieurs secondes à rendre le lot précédent, donc
+  // on tolère plusieurs tours sans nouveau message avant de conclure, et un
+  // scroll sans effet ne suffit pas à sortir de la boucle.
   const loadDeadline = Date.now() + 2 * 60_000;
   let prevCount = -1;
   let plateau = 0;
@@ -545,14 +548,13 @@ export async function openAndLoadThread(
     if (debug) console.error(`[thread.load] messages=${count} plateau=${plateau}`);
     if (count === prevCount) {
       plateau++;
-      if (plateau >= 3) break;
+      if (plateau >= HISTORY_PLATEAU_ROUNDS) break;
     } else {
       plateau = 0;
     }
     prevCount = count;
-    const scrolled = await scrollMessageListUp(page);
-    if (!scrolled) break;
-    await sleep(1500);
+    await scrollMessageListUp(page);
+    await sleep(1800);
   }
 
   // Expand les "Voir plus" au cas où certains messages soient tronqués
@@ -579,8 +581,13 @@ async function scrollMessageListUp(page: Page): Promise<boolean> {
         document.querySelector<HTMLElement>(".scaffold-layout__list");
       if (!container) return false;
       const before = container.scrollTop;
+      // Déjà en haut, le lazy-load ne se redéclenche pas sur un scrollTop
+      // identique: on redescend d'un cran avant de remonter pour produire un
+      // vrai delta.
+      if (before === 0 && container.scrollHeight > container.clientHeight) {
+        container.scrollTop = Math.min(200, container.scrollHeight);
+      }
       container.scrollTop = 0;
-      // Force un petit delta pour déclencher le lazy-load
       return before > 0 || container.scrollHeight > container.clientHeight;
     })
     .catch(() => false);
@@ -611,10 +618,17 @@ async function expandLongMessages(page: Page): Promise<number> {
   return typeof n === "number" ? n : 0;
 }
 
+/** Tours consécutifs sans nouveau message avant de considérer l'historique complet. */
+const HISTORY_PLATEAU_ROUNDS = 5;
+
 interface RawMessage {
   eventUrn: string | null;
-  /** URN du sender extrait directement du data-event-urn du message (source fiable). */
-  senderProfileUrnFromEvent: string | null;
+  /**
+   * URN porté par le data-event-urn du message. C'est le propriétaire de la
+   * boîte (nous), identique pour tous les messages du thread, entrants comme
+   * sortants. Sert à identifier "moi", jamais l'expéditeur.
+   */
+  mailboxProfileUrnFromEvent: string | null;
   senderName: string;
   senderProfileUrl: string | null;
   senderProfileUrn: string | null;
@@ -739,12 +753,15 @@ export async function extractThreadState(
         const out: RawMessage[] = [];
 
         for (const it of items) {
-          // Avant cet item, chercher un .msg-s-message-group__meta ascendant ou précédent
-          // qui indique le sender et la date du groupe.
+          // Le meta du groupe (expéditeur + heure) vit dans le premier item du
+          // groupe, à l'intérieur de l'item lui-même. Les items suivants n'en
+          // ont pas et héritent de `currentSender`.
           const groupMeta =
-            it.closest(".msg-s-message-group")?.querySelector<HTMLElement>(
-              ".msg-s-message-group__meta",
-            ) ?? null;
+            it.querySelector<HTMLElement>(".msg-s-message-group__meta") ??
+            it
+              .closest(".msg-s-message-list__event, .msg-s-message-group")
+              ?.querySelector<HTMLElement>(".msg-s-message-group__meta") ??
+            null;
 
           if (groupMeta) {
             const nameLink = groupMeta.querySelector<HTMLAnchorElement>(
@@ -797,16 +814,16 @@ export async function extractThreadState(
             }
           }
 
-          // URN sender extrait du data-event-urn (source fiable: le meta du
-          // group header affiche souvent l'autre participant pour tous les
-          // messages, y compris nos messages sortants).
-          let senderProfileUrnFromEvent: string | null = null;
+          // Le data-event-urn porte le URN de la boîte de réception, donc le
+          // nôtre, sur tous les messages du thread. On le garde pour savoir
+          // qui est "moi"; l'expéditeur vient du group header.
+          let mailboxProfileUrnFromEvent: string | null = null;
           if (eventUrn) {
-            const senderMatch = eventUrn.match(
+            const mailboxMatch = eventUrn.match(
               /urn:li:msg[a-zA-Z_]*:\(urn:li:fsd_profile:([A-Za-z0-9_-]+),/,
             );
-            if (senderMatch?.[1]) {
-              senderProfileUrnFromEvent = `urn:li:fsd_profile:${senderMatch[1]}`;
+            if (mailboxMatch?.[1]) {
+              mailboxProfileUrnFromEvent = `urn:li:fsd_profile:${mailboxMatch[1]}`;
             }
           }
 
@@ -826,7 +843,7 @@ export async function extractThreadState(
 
           out.push({
             eventUrn,
-            senderProfileUrnFromEvent,
+            mailboxProfileUrnFromEvent,
             senderName: currentSender.name,
             senderProfileUrl: currentSender.profileUrl,
             senderProfileUrn: currentSender.profileUrn,
@@ -857,16 +874,25 @@ export async function extractThreadState(
   const selfSlug = self.profileSlug;
   const selfName = self.name ?? null;
 
+  // Le data-event-urn de chaque message porte le URN de la boîte, donc le
+  // nôtre. C'est le signal le plus fiable pour reconnaître "moi" dans les
+  // group headers, dont les liens profil utilisent la forme URN et jamais le
+  // slug humain du nav.
+  const mailboxUrn =
+    raw.rawMessages.map((m) => m.mailboxProfileUrnFromEvent).find(Boolean) ?? null;
+
+  const isSelf = (p: { name: string; profileUrn: string | null; slug: string | null }): boolean => {
+    if (mailboxUrn && p.profileUrn) return p.profileUrn === mailboxUrn;
+    if (selfName && p.name === selfName) return true;
+    if (selfSlug && p.slug === selfSlug) return true;
+    return false;
+  };
+
   // LinkedIn rend un header par groupe de messages, et ce header pointe vers
-  // le profil de l'expéditeur du groupe. Donc pour nos messages sortants, le
-  // header pointe sur notre propre profil. On doit donc filtrer par nom
-  // contre `self.name` (lu dans l'alt de global-nav__me-photo) avant de
-  // construire l'ensemble "autres" servant à détecter outgoing.
-  const othersOnly = raw.participants.filter((p) => {
-    if (selfName && p.name === selfName) return false;
-    if (selfSlug && p.slug === selfSlug) return false;
-    return true;
-  });
+  // le profil de l'expéditeur du groupe. Pour nos messages sortants, il pointe
+  // donc sur notre propre profil, qu'on écarte avant de construire l'ensemble
+  // "autres".
+  const othersOnly = raw.participants.filter((p) => !isSelf(p));
   const otherParticipantUrns = new Set(
     othersOnly.map((p) => p.profileUrn).filter((u): u is string => Boolean(u)),
   );
@@ -879,18 +905,14 @@ export async function extractThreadState(
     console.error(
       `[thread.extract] self.name=${raw.self.name} selfSlug=${raw.self.profileSlug} participants_raw=${JSON.stringify(raw.participants.map((p) => p.name))} others=${JSON.stringify(othersOnly.map((p) => p.name))}`,
     );
-    const uniqSenders = new Set(
-      raw.rawMessages.map((m) => m.senderProfileUrnFromEvent).filter(Boolean),
+    const uniqSenders = new Set(raw.rawMessages.map((m) => m.senderProfileUrn).filter(Boolean));
+    console.error(
+      `[thread.extract] mailboxUrn=${mailboxUrn} unique msg sender urns=${JSON.stringify([...uniqSenders])}`,
     );
-    console.error(`[thread.extract] unique msg sender urns=${JSON.stringify([...uniqSenders])}`);
   }
 
   const participants: Author[] = raw.participants
-    .filter((p) => {
-      if (selfSlug && p.slug === selfSlug) return false;
-      if (selfName && p.name === selfName) return false;
-      return true;
-    })
+    .filter((p) => !isSelf(p))
     .map((p) => ({
       name: p.name || "Inconnu",
       ...(cleanProfileUrl(p.profileUrl) ? { profileUrl: cleanProfileUrl(p.profileUrl)! } : {}),
@@ -898,28 +920,26 @@ export async function extractThreadState(
     }));
 
   const messages: Message[] = raw.rawMessages.map((m, idx) => {
-    // Règle: si on connaît le URN sender via data-event-urn, on déclare
-    // outgoing quand ce URN n'est pas dans l'ensemble des autres participants.
-    // Fallback: comparer le nom lu dans le group header avec mon nom.
+    // L'expéditeur vient du group header. Il est sortant quand ce header
+    // pointe sur la boîte, sinon on compare le nom, sinon on retombe sur
+    // l'appartenance à l'ensemble des autres participants.
+    const senderUrn = m.senderProfileUrn;
     let outgoing = false;
-    if (m.senderProfileUrnFromEvent) {
-      outgoing = !otherParticipantUrns.has(m.senderProfileUrnFromEvent);
+    if (senderUrn && mailboxUrn) {
+      outgoing = senderUrn === mailboxUrn;
     } else if (selfName && m.senderName) {
       outgoing = m.senderName === selfName;
+    } else if (senderUrn) {
+      outgoing = !otherParticipantUrns.has(senderUrn);
     }
 
-    const senderInfo = m.senderProfileUrnFromEvent
-      ? participantByUrn.get(m.senderProfileUrnFromEvent)
-      : null;
+    const senderInfo = senderUrn ? participantByUrn.get(senderUrn) : null;
 
     const sentAt = m.datetime ?? m.timestampText ?? "";
     const id = m.eventUrn ?? hashMessageId(threadId, m.senderName, sentAt, m.body, idx);
     const cleanedUrl = cleanProfileUrl(senderInfo?.profileUrl ?? m.senderProfileUrl);
     const urn =
-      m.senderProfileUrnFromEvent ??
-      senderInfo?.profileUrn ??
-      m.senderProfileUrn ??
-      extractProfileUrn(m.senderProfileUrl);
+      senderUrn ?? senderInfo?.profileUrn ?? extractProfileUrn(m.senderProfileUrl);
     const fromName = outgoing
       ? self.name || "Moi"
       : senderInfo?.name || m.senderName || "Inconnu";

@@ -24,6 +24,8 @@ export interface OutboxItem {
   checkAttempts?: number;
   /** Date ISO du dernier pre-flight ayant constaté un degré non-1st. */
   lastCheckAt?: string;
+  /** Date ISO avant laquelle `outbox:send` laisse l'item en attente. */
+  sendAfter?: string;
   status: OutboxStatus;
   file: string;
 }
@@ -42,6 +44,7 @@ interface OutboxFrontmatter extends Record<string, unknown> {
   note?: string | null;
   check_attempts?: number | null;
   last_check_at?: string | null;
+  send_after?: string | null;
 }
 
 function ensureDirs(): void {
@@ -82,6 +85,7 @@ export function addOutboxItem(params: {
   recipient: string;
   body: string;
   label?: string;
+  sendAfter?: string;
 }): OutboxItem {
   ensureDirs();
   const createdAt = new Date().toISOString();
@@ -98,6 +102,7 @@ export function addOutboxItem(params: {
     recipient_label: recipientLabel,
     status: "pending",
     created_at: createdAt,
+    ...(params.sendAfter ? { send_after: params.sendAfter } : {}),
   };
 
   writeMarkdown(filepath, { frontmatter, body: params.body + (params.body.endsWith("\n") ? "" : "\n") });
@@ -108,6 +113,7 @@ export function addOutboxItem(params: {
     recipientLabel,
     body: params.body,
     createdAt,
+    ...(params.sendAfter ? { sendAfter: params.sendAfter } : {}),
     status: "pending",
     file: filepath,
   };
@@ -133,6 +139,7 @@ function parseItem(file: string, status: OutboxStatus): OutboxItem | null {
   if (fm.note) item.note = String(fm.note);
   if (typeof fm.check_attempts === "number") item.checkAttempts = fm.check_attempts;
   if (fm.last_check_at) item.lastCheckAt = String(fm.last_check_at);
+  if (fm.send_after) item.sendAfter = String(fm.send_after);
   return item;
 }
 
@@ -150,6 +157,14 @@ export function listOutboxItems(statuses: OutboxStatus[] = ["pending"]): OutboxI
   }
   out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return out;
+}
+
+/**
+ * Un item programmé reste en pending et invisible pour `outbox:send` tant que
+ * sa date `send_after` n'est pas passée.
+ */
+export function isOutboxItemDue(item: OutboxItem, now: Date = new Date()): boolean {
+  return !item.sendAfter || item.sendAfter <= now.toISOString();
 }
 
 export function findOutboxItemById(id: string): OutboxItem | null {

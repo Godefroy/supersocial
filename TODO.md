@@ -68,11 +68,15 @@ Infra :
 
 - [ ] Sync incrémentale pour les commentaires (ne récupérer que les nouveaux sur un post déjà fetché)
 - [ ] Sync incrémentale pour les threads (s'arrêter dès que tous les messages chargés sont déjà dans le fichier)
+- [x] `thread:sync` en batch : `thread:sync <urls...>` ou `--from-file <path>`, une seule session Chrome, pause `read` entre chaque thread
+- [x] `thread:sync --rewrite` : repart du fichier vide, seul moyen de corriger un historique déjà stocké puisque les msg-id ne changent pas
+- [x] Déroulé complet de l'historique : plateau porté à 5 tours, scroll qui produit un vrai delta avant de remonter, un scroll sans effet ne coupe plus la boucle
 - [ ] URN profil des commentateurs : actuellement l'URL `/in/slug/` est le seul identifiant disponible depuis la page commentaires. Pour le vrai URN `urn:li:fsd_profile:...`, il faut visiter la page profil.
 - [ ] Extraction de l'URN des posts côté search : souvent absent du DOM React, on retombe sur ID synthétique. Parser le blob `<script id="rehydrate-data">` (format Next.js RSC Flight) serait plus robuste.
 - [ ] Tracker les limites hebdomadaires en plus du journalier (ex : 100-200 invitations/semaine)
 - [ ] Commande `linkedin health` : vérifier session valide, test rapide d'extraction, rapport
-- [ ] Outbox : support d'un délai programmé (envoyer pas avant telle heure, fenêtres ouvrables uniquement via `waitForWorkingWindow`)
+- [x] Outbox : délai programmé par item (`outbox:add --after <date>`, champ `send_after`), `outbox:send` ignore les items programmés et annonce le prochain
+- [ ] Outbox : restreindre l'envoi aux fenêtres ouvrables via `waitForWorkingWindow` (aujourd'hui seul le cron cadre les créneaux)
 - [x] Outbox : reprendre les items `failed` après correction (`outbox:retry [ids...] | --all` avec `--match <motif>`)
 - [ ] Tests (aucun actuellement)
 - [ ] CI GitHub Actions pour typecheck (si le repo passe en public un jour)

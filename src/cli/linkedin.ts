@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { readFileSync } from "node:fs";
 import * as readline from "node:readline";
 import { LinkedInProvider } from "../providers/linkedin/index.js";
 import {
@@ -28,6 +29,7 @@ import {
   retryOutboxItem,
   recordOutboxCheckAttempt,
   findPendingOutboxItemsByRecipient,
+  isOutboxItemDue,
   MAX_OUTBOX_WAITING_CHECKS,
   MIN_HOURS_BETWEEN_OUTBOX_CHECKS,
   type OutboxItem,
@@ -61,6 +63,32 @@ async function withProvider<T>(fn: (p: LinkedInProvider) => Promise<T>): Promise
   } finally {
     await provider.dispose();
   }
+}
+
+/**
+ * Accepte `2026-08-27` (envoi à partir de 00:00 ce jour-là), `2026-08-27T10:00`
+ * ou un décalage relatif `+2d` / `+6h`. Renvoie une date ISO.
+ */
+function parseSendAfter(input: string): string {
+  const relative = input.match(/^\+(\d+)([dh])$/i);
+  if (relative) {
+    const n = parseInt(relative[1]!, 10);
+    const ms = relative[2]!.toLowerCase() === "d" ? n * 24 * 3600 * 1000 : n * 3600 * 1000;
+    return new Date(Date.now() + ms).toISOString();
+  }
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(input) ? `${input}T00:00:00` : input);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Date illisible: "${input}". Attendu: YYYY-MM-DD, YYYY-MM-DDTHH:mm, +2d ou +6h.`);
+  }
+  return date.toISOString();
+}
+
+/** Les dates sont stockées en UTC, elles s'affichent en heure locale. */
+function formatLocalDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 async function askYesNo(question: string): Promise<boolean> {
@@ -248,14 +276,43 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
-    .command("thread:sync <url>")
-    .description("Synchroniser une conversation. url = URL profil (/in/slug/), URL thread (/messaging/thread/id/) ou thread ID")
-    .action(async (url: string) => {
-      const { conversation, messages } = await withProvider((p) => p.readConversation(url));
-      const file = writeConversation(conversation, messages);
-      console.log(
-        `Thread ${conversation.id} avec ${conversation.participants.map((p) => p.name).join(", ") || "?"}: ${messages.length} message(s). Stocké dans ${file}`,
-      );
+    .command("thread:sync <urls...>")
+    .description("Synchroniser une ou plusieurs conversations dans une seule session. url = URL profil (/in/slug/), URL thread (/messaging/thread/id/) ou thread ID")
+    .option("--rewrite", "réécrire le fichier au lieu de compléter l'historique existant")
+    .option("--from-file <path>", "lire les cibles dans un fichier, une par ligne (# pour commenter)")
+    .action(async (urls: string[], opts: { rewrite?: boolean; fromFile?: string }) => {
+      const targets = [...urls];
+      if (opts.fromFile) {
+        for (const line of readFileSync(opts.fromFile, "utf-8").split("\n")) {
+          const t = line.trim();
+          if (t && !t.startsWith("#")) targets.push(t);
+        }
+      }
+      if (targets.length === 0) {
+        console.log("Aucune cible.");
+        return;
+      }
+
+      let ok = 0;
+      let ko = 0;
+      // Un seul browser pour toute la boucle: évite N lancements de Chrome.
+      await withProvider(async (p) => {
+        for (const [i, target] of targets.entries()) {
+          try {
+            const { conversation, messages } = await p.readConversation(target);
+            const file = writeConversation(conversation, messages, { rewrite: opts.rewrite === true });
+            ok++;
+            console.log(
+              `[${i + 1}/${targets.length}] Thread ${conversation.id} avec ${conversation.participants.map((x) => x.name).join(", ") || "?"}: ${messages.length} message(s). Stocké dans ${file}`,
+            );
+          } catch (err) {
+            ko++;
+            console.error(`[${i + 1}/${targets.length}] ${target}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (i < targets.length - 1) await humanPause("read");
+        }
+      });
+      if (targets.length > 1) console.log(`\n${ok} thread(s) synchronisé(s), ${ko} en échec.`);
     });
 
   linkedin
@@ -339,11 +396,15 @@ export function registerLinkedInCommands(program: Command): void {
     .command("outbox:add <url> <body>")
     .description("Ajouter un message à la boîte d'envoi (traité ensuite par outbox:send)")
     .option("--label <label>", "libellé lisible pour cet item")
-    .action((url: string, body: string, opts: { label?: string }) => {
-      const itemParams: { recipient: string; body: string; label?: string } = { recipient: url, body };
+    .option("--after <date>", "ne pas envoyer avant cette date (YYYY-MM-DD, YYYY-MM-DDTHH:mm, +2d, +6h)")
+    .action((url: string, body: string, opts: { label?: string; after?: string }) => {
+      const itemParams: { recipient: string; body: string; label?: string; sendAfter?: string } = { recipient: url, body };
       if (opts.label) itemParams.label = opts.label;
+      if (opts.after) itemParams.sendAfter = parseSendAfter(opts.after);
       const item = addOutboxItem(itemParams);
-      console.log(`Ajouté: ${item.id} | ${item.recipientLabel} | ${formatMessagePreview(body, 60)}`);
+      console.log(
+        `Ajouté: ${item.id} | ${item.recipientLabel} | ${formatMessagePreview(body, 60)}${item.sendAfter ? ` | programmé après ${formatLocalDateTime(item.sendAfter)}` : ""}`,
+      );
       console.log(`Fichier: ${item.file}`);
     });
 
@@ -361,11 +422,12 @@ export function registerLinkedInCommands(program: Command): void {
         console.log("Aucun item.");
         return;
       }
-      console.log(`ID        Status   Destinataire                          Message`);
-      console.log(`--------  -------  ------------------------------------  -------`);
+      console.log(`ID        Status   Programmé         Destinataire                          Message`);
+      console.log(`--------  -------  ----------------  ------------------------------------  -------`);
       for (const it of items) {
+        const schedule = it.sendAfter ? formatLocalDateTime(it.sendAfter) : "";
         console.log(
-          `${it.id.padEnd(8)}  ${it.status.padEnd(7)}  ${it.recipientLabel.slice(0, 36).padEnd(36)}  ${formatMessagePreview(it.body, 60)}`,
+          `${it.id.padEnd(8)}  ${it.status.padEnd(7)}  ${schedule.padEnd(16)}  ${it.recipientLabel.slice(0, 36).padEnd(36)}  ${formatMessagePreview(it.body, 60)}`,
         );
       }
     });
@@ -430,9 +492,22 @@ export function registerLinkedInCommands(program: Command): void {
     .option("-n, --count <n>", "nombre max d'items à envoyer cette session", (v) => parseInt(v, 10))
     .option("--dry-run", "ne pas envoyer, juste afficher le plan")
     .action(async (opts: { count?: number; dryRun?: boolean }) => {
-      const pending = listOutboxItems(["pending"]);
-      if (pending.length === 0) {
+      const allPending = listOutboxItems(["pending"]);
+      if (allPending.length === 0) {
         console.log("Aucun item en attente.");
+        return;
+      }
+      const pending = allPending.filter((it) => isOutboxItemDue(it));
+      const scheduled = allPending.length - pending.length;
+      if (scheduled > 0) {
+        const next = allPending
+          .filter((it) => !isOutboxItemDue(it))
+          .map((it) => it.sendAfter!)
+          .sort()[0]!;
+        console.log(`Programmés pour plus tard: ${scheduled} (prochain le ${formatLocalDateTime(next)})`);
+      }
+      if (pending.length === 0) {
+        console.log("Aucun item à traiter maintenant.");
         return;
       }
       const limits = getDailyLimits();
