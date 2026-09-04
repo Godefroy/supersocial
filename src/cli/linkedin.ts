@@ -17,7 +17,7 @@ import {
   PROFILE_CACHE_MAX_AGE_DAYS,
 } from "../providers/linkedin/storage.js";
 import { extractPostIdFromUrl } from "../providers/linkedin/pages/comments.js";
-import { extractProfileSlug } from "../providers/linkedin/pages/profile.js";
+import { profileSlugKey } from "../providers/linkedin/profile-url.js";
 import type { ProfileStatus } from "../core/provider.js";
 import {
   addOutboxItem,
@@ -647,7 +647,7 @@ export function registerLinkedInCommands(program: Command): void {
     .description(`Lire degré, URN, poste/boîte, postes actuels, Infos et état d'invitation/messagerie. Cache disque ${PROFILE_CACHE_MAX_AGE_DAYS}j dans data/linkedin/profiles/.`)
     .option("--fresh", "ignorer le cache et recharger la page profil")
     .action(async (url: string, opts: { fresh?: boolean }) => {
-      const slug = extractProfileSlug(url);
+      const slug = profileSlugKey(url);
 
       if (slug && !opts.fresh) {
         const cached = readFreshProfile(slug);

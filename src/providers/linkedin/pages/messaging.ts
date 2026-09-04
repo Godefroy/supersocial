@@ -4,25 +4,24 @@ import type { Author, ConnectionDegree, Message } from "../../../core/provider.j
 import { sleep, LinkedInDmRestrictedError, LoginRequiredError } from "../../../core/throttle.js";
 import { safeEval } from "../../../core/extract.js";
 import { dumpPageState } from "../../../core/debug.js";
-import { cleanProfileUrl, extractProfileUrn } from "../profile-url.js";
+import {
+  cleanProfileUrl,
+  extractProfileUrn,
+  normalizeUrlInput,
+  tryCanonicalProfileUrl,
+} from "../profile-url.js";
 import { DEGREE_TOKEN_ALT, degreeFromToken, LABELS } from "../locale.js";
 
 const MESSAGING_BASE = "https://www.linkedin.com/messaging/thread/";
-const PROFILE_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/([^/?#]+)/i;
 const THREAD_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/messaging\/thread\/([^/?#]+)/i;
 const THREAD_ID_RE = /^2-[A-Za-z0-9_\-+/]+=*$/;
 
 export function extractThreadIdFromInput(input: string): string | null {
-  const mUrl = input.match(THREAD_URL_RE);
+  const normalized = normalizeUrlInput(input);
+  const mUrl = normalized.match(THREAD_URL_RE);
   if (mUrl?.[1]) return decodeURIComponent(mUrl[1]);
-  const trimmed = input.trim();
-  if (THREAD_ID_RE.test(trimmed)) return trimmed;
+  if (THREAD_ID_RE.test(normalized)) return normalized;
   return null;
-}
-
-export function extractProfileSlugFromInput(input: string): string | null {
-  const m = input.match(PROFILE_URL_RE);
-  return m?.[1] ?? null;
 }
 
 export function threadIdToUrl(threadId: string): string {
@@ -77,14 +76,12 @@ export async function resolveTarget(
     return { threadId: directId, threadUrl: threadIdToUrl(directId) };
   }
 
-  const slug = extractProfileSlugFromInput(input);
-  if (!slug) {
+  const profileUrl = tryCanonicalProfileUrl(input);
+  if (!profileUrl) {
     throw new Error(
       `Impossible de parser "${input}": donne une URL profil (/in/slug/), une URL thread (/messaging/thread/id/) ou un thread ID (2-...).`,
     );
   }
-
-  const profileUrl = `https://www.linkedin.com/in/${slug}/`;
   await page.goto(profileUrl, { waitUntil: "domcontentloaded" });
   assertNotBlocked(page);
   await sleep(2500);
@@ -217,28 +214,49 @@ async function tryResolveExistingThreadViaMessageOverlay(
 async function deriveThreadIdFromMessageUrns(
   page: Page,
   targetProfileUrn: string,
+  opts: { acceptThreadWithoutIncoming?: boolean } = {},
 ): Promise<string | null> {
   const id = await page
-    .evaluate((targetUrn) => {
+    .evaluate((arg) => {
+      const targetUrn = arg.targetUrn;
       // Le panneau droit montre un thread actif. Sa liste messages est dans
-      // .msg-s-message-list-container. On valide que c'est le thread avec la
-      // cible en vérifiant qu'un lien vers /in/<urn> de la cible y figure,
-      // puis on dérive l'ID thread depuis n'importe quel data-event-urn du
-      // conteneur (le sender est indifférent: tous les messages partagent le
-      // même thread UUID après le `&`).
+      // .msg-s-message-list-container. On dérive l'ID thread depuis n'importe
+      // quel data-event-urn du conteneur (le sender est indifférent: tous les
+      // messages partagent le même thread UUID après le `&`), après avoir
+      // vérifié que le thread affiché est bien celui de la cible.
       const containers = Array.from(
         document.querySelectorAll<HTMLElement>(
           ".msg-s-message-list-container, .msg-s-message-list",
         ),
       );
+      /** URNs de profil liés depuis le conteneur (en-têtes de groupe de messages). */
+      const linkedUrns = (container: HTMLElement): string[] => {
+        const out: string[] = [];
+        for (const a of Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href*="/in/"]'))) {
+          const m = (a.getAttribute("href") ?? a.href ?? "").match(/\/in\/(ACoA[A-Za-z0-9_-]+)/);
+          if (m?.[1]) out.push(m[1]);
+        }
+        return out;
+      };
       for (const container of containers) {
-        const targetLink = container.querySelector<HTMLAnchorElement>(
-          `a[href*="/in/${targetUrn}"]`,
-        );
-        if (!targetLink) continue;
-        const evts = Array.from(
-          container.querySelectorAll<HTMLElement>("[data-event-urn]"),
-        );
+        const evts = Array.from(container.querySelectorAll<HTMLElement>("[data-event-urn]"));
+        if (evts.length === 0) continue;
+        // Le data-event-urn porte `(<urn boîte>,2-<base64>)`: la boîte, c'est nous.
+        const mailboxUrn =
+          (evts[0]!.getAttribute("data-event-urn") ?? "").match(
+            /fsd_profile:([A-Za-z0-9_-]+)/,
+          )?.[1] ?? null;
+        const urns = linkedUrns(container);
+        const foreign = urns.filter((u) => u !== mailboxUrn);
+        // Thread de la cible quand elle y est liée. Quand le thread ne contient
+        // que nos propres messages (aucune réponse reçue), LinkedIn ne rend
+        // aucun en-tête de groupe côté destinataire: l'absence de tout profil
+        // tiers vaut alors validation, sinon un envoi réussi remonterait en
+        // échec faute d'ID thread.
+        const belongsToTarget =
+          foreign.includes(targetUrn) ||
+          (arg.acceptThreadWithoutIncoming && foreign.length === 0);
+        if (!belongsToTarget) continue;
         for (const el of evts) {
           const eurn = el.getAttribute("data-event-urn") ?? "";
           const m = eurn.match(/2-([A-Za-z0-9_\-+/]+=*)\)/) ??
@@ -258,7 +276,7 @@ async function deriveThreadIdFromMessageUrns(
         }
       }
       return null;
-    }, targetProfileUrn)
+    }, { targetUrn: targetProfileUrn, acceptThreadWithoutIncoming: opts.acceptThreadWithoutIncoming === true })
     .catch(() => null);
   return typeof id === "string" ? id : null;
 }
@@ -408,7 +426,11 @@ export async function sendFromComposeUrl(
       return { threadId, threadUrl: threadIdToUrl(threadId) };
     }
     if (recipientUrn) {
-      const derived = await deriveThreadIdFromMessageUrns(page, recipientUrn);
+      // Après un envoi depuis compose, le panneau affiché est forcément celui
+      // de la cible: on accepte un thread sans message entrant.
+      const derived = await deriveThreadIdFromMessageUrns(page, recipientUrn, {
+        acceptThreadWithoutIncoming: true,
+      });
       if (derived) {
         return { threadId: derived, threadUrl: threadIdToUrl(derived) };
       }
@@ -660,12 +682,26 @@ export async function extractThreadState(
     () => {
       const innerText = (el: Element): string => (el as HTMLElement).innerText ?? "";
 
+      /**
+       * Slug profil décodé. LinkedIn sert les slugs non-ASCII percent-encodés
+       * dans certains liens et bruts dans d'autres: on décode systématiquement
+       * pour que les comparaisons "est-ce moi ?" restent valides.
+       */
+      const slugFrom = (href: string): string | null => {
+        const m = (href || "").match(/\/in\/([^/?#]+)/);
+        if (!m?.[1]) return null;
+        try {
+          return decodeURIComponent(m[1]);
+        } catch {
+          return m[1];
+        }
+      };
+
       const getSelf = (): { name: string | null; profileSlug: string | null } => {
         const meLink = document.querySelector<HTMLAnchorElement>(
           ".global-nav__me a[href*='/in/'], .global-nav__me-photo-link, a.global-nav__me-photo-link",
         );
         const href = meLink?.getAttribute("href") ?? "";
-        const slugMatch = href.match(/\/in\/([^/]+)/);
         const img = document.querySelector<HTMLImageElement>(".global-nav__me-photo");
         // LinkedIn expose le nom complet dans l'attribut alt de l'image du nav
         // (ex: "Godefroy de Compreignac"). C'est notre signal le plus fiable
@@ -675,7 +711,7 @@ export async function extractThreadState(
           img?.getAttribute("alt")?.trim() ||
           meLink?.getAttribute("aria-label")?.replace(/^Moi:?\s*/i, "").trim() ||
           null;
-        return { name: name || null, profileSlug: slugMatch?.[1] ?? null };
+        return { name: name || null, profileSlug: slugFrom(href) };
       };
 
       const firstLine = (s: string): string => s.trim().split("\n")[0]?.trim() ?? "";
@@ -698,8 +734,7 @@ export async function extractThreadState(
         const out: RawThread["participants"] = [];
         for (const a of links) {
           const href = a.getAttribute("href") ?? "";
-          const slugMatch = href.match(/\/in\/([^/?#]+)/);
-          const slug = slugMatch?.[1] ?? null;
+          const slug = slugFrom(href);
           if (slug && seen.has(slug)) continue;
           if (slug) seen.add(slug);
           // innerText du lien contient le nom (et parfois le statut). On prend
@@ -774,7 +809,7 @@ export async function extractThreadState(
               ".msg-s-message-group__timestamp, time",
             );
             const href = nameLink?.getAttribute("href") ?? "";
-            const slugMatch = href.match(/\/in\/([^/?#]+)/);
+            const slug = slugFrom(href);
             const urnMatch = href.match(/(urn:li:fsd_profile:[A-Za-z0-9_-]+)/);
             const rawName = (nameEl ? innerText(nameEl) : innerText(groupMeta)).trim().split("\n")[0]?.trim() ?? "";
             const name = rawName.replace(/\s*•\s*.+$/, "").trim();
@@ -782,8 +817,8 @@ export async function extractThreadState(
             currentSender = {
               name,
               profileUrl: href || null,
-              profileUrn: urnMatch?.[1] ?? (slugMatch?.[1]?.startsWith("ACoAA") ? `urn:li:fsd_profile:${slugMatch[1]}` : null),
-              slug: slugMatch?.[1] ?? null,
+              profileUrn: urnMatch?.[1] ?? (slug?.startsWith("ACoAA") ? `urn:li:fsd_profile:${slug}` : null),
+              slug,
               timestampText: tsEl ? innerText(tsEl).trim() : null,
             };
           }

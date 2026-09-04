@@ -29,7 +29,8 @@ Infra :
 - Stockage conversations dans `data/linkedin/conversations/<slug>.md` avec index JSON par thread_id
 - Outbox : pending/sent/failed sous `data/linkedin/outbox/`, un markdown par item. `outbox:send` dédup avant chaque envoi (compare le dernier sortant du thread au body), un match passe l'item en `sent` avec note sans consommer de quota dm
 - Détection de DM refusé via `card-upsell-v2__headline` (upsell Premium): fast-fail en 3-5s avec `LinkedInDmRestrictedError`, break du batch outbox
-- Résolution URL profil → thread ID via dérivation base64 depuis les `data-event-urn` (décoder, prendre la partie après `&`, réencoder avec préfixe `2-`). Évite la recherche inbox, gère homonymes et threads anciens
+- Résolution URL profil → thread ID via dérivation base64 depuis les `data-event-urn` (décoder, prendre la partie après `&`, réencoder avec préfixe `2-`). Évite la recherche inbox, gère homonymes et threads anciens. Après un envoi depuis compose, un thread sans message entrant est accepté (aucun en-tête de groupe côté destinataire à ce stade)
+- URLs de comptes centralisées dans `src/providers/linkedin/profile-url.ts` : guillemets et échappements `\uXXXX` retirés à l'entrée, slug percent-encodé en sortie, forme canonique `https://www.linkedin.com/in/<slug>/` partout (outbox, invitations, recherche de personnes, cache profil, cache de cibles)
 - Détection outgoing par comparaison URN sender (data-event-urn) ∉ participants "autres" (où self est filtré par nom depuis l'alt de `.global-nav__me-photo`)
 - Headless par défaut (mode "new" de Playwright + stealth) sauf `linkedin login`. Sur redirect `/login` ou `/checkpoint/`, le CLI lève `LoginRequiredError`, notifie macOS et ouvre auto une fenêtre Chrome headful pour résoudre la session
 

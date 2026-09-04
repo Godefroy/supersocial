@@ -3,6 +3,7 @@ import type { ConnectionDegree, ProfilePosition, ProfileStatus, InviteResult } f
 import { sleep, LoginRequiredError } from "../../../core/throttle.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { DEGREE_TOKEN_ALT, degreeFromToken, LABELS, MATCHES_LABEL_SRC } from "../locale.js";
+import { canonicalProfileUrl } from "../profile-url.js";
 
 /**
  * Les sections "Infos" et "Expérience" se rendent en lazy quand elles entrent
@@ -22,19 +23,6 @@ async function loadProfileSections(page: Page): Promise<void> {
     })
     .catch(() => undefined);
   await sleep(1200);
-}
-
-const PROFILE_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/in\/([^/?#]+)/i;
-
-export function extractProfileSlug(input: string): string | null {
-  const m = input.match(PROFILE_URL_RE);
-  return m?.[1] ?? null;
-}
-
-export function canonicalProfileUrl(input: string): string {
-  const slug = extractProfileSlug(input);
-  if (!slug) throw new Error(`URL profil invalide: ${input}. Format attendu: https://www.linkedin.com/in/<slug>/`);
-  return `https://www.linkedin.com/in/${slug}/`;
 }
 
 /**

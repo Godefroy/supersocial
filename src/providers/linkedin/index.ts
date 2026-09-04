@@ -40,6 +40,7 @@ import {
   sendFromComposeUrl,
 } from "./pages/messaging.js";
 import { readProfileStatus, sendInvite } from "./pages/profile.js";
+import { canonicalRecipient } from "./profile-url.js";
 import {
   readReceivedInvitations,
   acceptReceivedInvitation,
@@ -118,10 +119,14 @@ export class LinkedInProvider implements SocialProvider {
     page: Page,
     input: string,
   ): Promise<Awaited<ReturnType<typeof resolveTarget>>> {
-    const cached = this.targetCache.get(input);
+    // Clé canonique: deux écritures de la même URL profil (emoji brut,
+    // percent-encodé, guillemets recopiés) partagent la même entrée de cache
+    // et évitent un second chargement de page.
+    const key = canonicalRecipient(input);
+    const cached = this.targetCache.get(key);
     if (cached) return cached;
     const target = await resolveTarget(page, input);
-    this.targetCache.set(input, target);
+    this.targetCache.set(key, target);
     return target;
   }
 
@@ -198,7 +203,7 @@ export class LinkedInProvider implements SocialProvider {
       // Le compose a redirigé vers /messaging/thread/<id>/; on met à jour le cache
       // et on considère le thread "chargé" puisque le DOM contient déjà le message
       // envoyé (thread neuf = pas d'historique à dérouler).
-      this.targetCache.set(input, { threadId, threadUrl });
+      this.targetCache.set(canonicalRecipient(input), { threadId, threadUrl });
       this.loadedThreadUrl = threadUrl;
     } else {
       throw new Error(`Cible non résolue: ni thread existant ni compose URL disponible pour "${input}".`);

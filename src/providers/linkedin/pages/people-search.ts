@@ -5,6 +5,7 @@ import { DEGREE_TOKEN_ALT, degreeFromToken } from "../locale.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { scrollToBottom, scrollToTop } from "../page-ops.js";
 import { sleep, LoginRequiredError } from "../../../core/throttle.js";
+import { canonicalProfileUrl } from "../profile-url.js";
 
 const PEOPLE_SEARCH_URL = "https://www.linkedin.com/search/results/people/";
 
@@ -22,7 +23,9 @@ function buildSearchUrl(query: string, network: NetworkFilter, pageNum: number):
 }
 
 interface RawPerson {
+  /** Slug décodé (lisible), tel qu'extrait du href de la carte. */
   slug: string;
+  /** Chemin `/in/<slug>/` brut, canonicalisé côté Node. */
   url: string;
   name: string;
   headline: string | null;
@@ -157,7 +160,9 @@ async function extractPeopleOnPage(page: Page): Promise<RawPerson[]> {
         seen.add(slug);
         out.push({
           slug,
-          url: `https://www.linkedin.com/in/${slug}/`,
+          // Le slug lisible sert au dédoublonnage; l'URL est reconstruite
+          // percent-encodée côté Node pour rester navigable telle quelle.
+          url: `/in/${slug}/`,
           name: nameClean,
           headline,
           location,
@@ -176,7 +181,7 @@ function materialize(r: RawPerson): PersonResult {
   const degree = degreeFromToken(r.degreeText);
   return {
     name: r.name,
-    profileUrl: r.url,
+    profileUrl: canonicalProfileUrl(r.url),
     ...(r.headline ? { headline: r.headline } : {}),
     ...(r.location ? { location: r.location } : {}),
     ...(degree ? { degree } : {}),

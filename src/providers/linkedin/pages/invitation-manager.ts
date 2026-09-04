@@ -4,7 +4,7 @@ import { sleep, LoginRequiredError } from "../../../core/throttle.js";
 import { dumpPageState } from "../../../core/debug.js";
 import { LABELS, MATCHES_LABEL_SRC } from "../locale.js";
 import { humanScroll, scrollToBottom, scrollToTop } from "../page-ops.js";
-import { canonicalProfileUrl, extractProfileSlug } from "./profile.js";
+import { canonicalProfileUrl, extractProfileSlug } from "../profile-url.js";
 
 /**
  * Gestionnaire des invitations reçues. Page dédiée hors du feed algorithmique,
@@ -79,10 +79,15 @@ const FIND_CARDS_SRC = `(matchesLabel, labels) => {
 }`;
 
 
-/** Extrait le slug d'une URL profil, côté navigateur. */
+/**
+ * Extrait le slug d'une URL profil, côté navigateur. Le slug est décodé pour
+ * que les comparaisons restent valides quand LinkedIn sert le même profil
+ * tantôt percent-encodé, tantôt brut.
+ */
 const SLUG_OF_SRC = `(href) => {
   const m = String(href || "").match(/\\/in\\/([^/?#]+)/);
-  return m ? m[1] : null;
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
 }`;
 
 /** Contexte sérialisable injecté dans les évaluations navigateur. */

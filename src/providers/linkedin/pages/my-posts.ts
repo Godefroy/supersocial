@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import type { Post } from "../../../core/provider.js";
 import { loadAndExtractPosts } from "../page-ops.js";
 import { LoginRequiredError } from "../../../core/throttle.js";
+import { encodeProfileSlug } from "../profile-url.js";
 
 export interface ListMyPostsOptions {
   limit?: number;
@@ -15,7 +16,7 @@ export async function listMyPostsOnPage(
   opts: ListMyPostsOptions = {},
 ): Promise<Post[]> {
   const limit = opts.limit ?? 50;
-  const slug = opts.profileSlug ?? "me";
+  const slug = opts.profileSlug ? encodeProfileSlug(opts.profileSlug) : "me";
   const url = `https://www.linkedin.com/in/${slug}/recent-activity/all/`;
 
   await page.goto(url, { waitUntil: "domcontentloaded" });

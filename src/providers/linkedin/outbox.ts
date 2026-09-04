@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, renameSync, existsSync, unlinkSync } from "node
 import { join, basename } from "node:path";
 import { slugify, writeMarkdown, readMarkdown } from "../../core/storage.js";
 import { linkedinPaths } from "./storage.js";
+import { canonicalRecipient, decodeProfileSlug } from "./profile-url.js";
 
 /** Nombre maximum de pre-flights où la cible n'est pas en 1ère relation. Au-delà, l'item passe en `failed`. */
 export const MAX_OUTBOX_WAITING_CHECKS = 10;
@@ -65,7 +66,7 @@ function isoTimestamp(d: Date = new Date()): string {
 
 function deriveLabelFromRecipient(recipient: string): string {
   const profile = recipient.match(/\/in\/([^/?#]+)/);
-  if (profile?.[1]) return profile[1];
+  if (profile?.[1]) return decodeProfileSlug(profile[1]);
   const thread = recipient.match(/messaging\/thread\/([^/?#]+)/);
   if (thread?.[1]) return `thread-${thread[1].slice(0, 10)}`;
   return recipient.slice(0, 30);
@@ -90,15 +91,19 @@ export function addOutboxItem(params: {
   ensureDirs();
   const createdAt = new Date().toISOString();
   const id = Math.random().toString(36).slice(2, 10);
-  const recipientLabel = params.label ?? deriveLabelFromRecipient(params.recipient);
-  const filename = filenameFor({ id, recipient: params.recipient, createdAt });
+  // Le destinataire est canonicalisé à l'écriture: une URL profil recopiée
+  // avec des guillemets, un échappement `\uXXXX` ou un emoji brut donne le
+  // même `https://www.linkedin.com/in/<slug-percent-encodé>/`.
+  const recipient = canonicalRecipient(params.recipient);
+  const recipientLabel = params.label ?? deriveLabelFromRecipient(recipient);
+  const filename = filenameFor({ id, recipient, createdAt });
   const filepath = join(linkedinPaths.outboxPendingDir(), filename);
 
   const frontmatter: OutboxFrontmatter = {
     provider: "linkedin",
     kind: "outbox_item",
     id,
-    recipient: params.recipient,
+    recipient,
     recipient_label: recipientLabel,
     status: "pending",
     created_at: createdAt,
@@ -109,7 +114,7 @@ export function addOutboxItem(params: {
 
   return {
     id,
-    recipient: params.recipient,
+    recipient,
     recipientLabel,
     body: params.body,
     createdAt,
@@ -124,10 +129,13 @@ function parseItem(file: string, status: OutboxStatus): OutboxItem | null {
   if (!doc) return null;
   const fm = doc.frontmatter;
   if (fm.kind !== "outbox_item") return null;
+  // Canonicalisation à la lecture aussi: les items écrits avant cette règle
+  // restent exploitables sans réécriture de fichier.
+  const recipient = canonicalRecipient(String(fm.recipient));
   const item: OutboxItem = {
     id: String(fm.id),
-    recipient: String(fm.recipient),
-    recipientLabel: String(fm.recipient_label ?? deriveLabelFromRecipient(String(fm.recipient))),
+    recipient,
+    recipientLabel: String(fm.recipient_label ?? deriveLabelFromRecipient(recipient)),
     body: doc.body.trimEnd(),
     createdAt: String(fm.created_at),
     status,
@@ -180,13 +188,14 @@ function moveItem(item: OutboxItem, next: OutboxStatus, updates: Partial<OutboxF
   ensureDirs();
   const doc = readMarkdown<OutboxFrontmatter>(item.file);
   if (!doc) throw new Error(`Fichier outbox introuvable: ${item.file}`);
+  const recipient = canonicalRecipient(String(doc.frontmatter.recipient));
   const nextFm: OutboxFrontmatter = {
     ...doc.frontmatter,
     provider: "linkedin",
     kind: "outbox_item",
     id: String(doc.frontmatter.id),
-    recipient: String(doc.frontmatter.recipient),
-    recipient_label: String(doc.frontmatter.recipient_label ?? deriveLabelFromRecipient(String(doc.frontmatter.recipient))),
+    recipient,
+    recipient_label: String(doc.frontmatter.recipient_label ?? deriveLabelFromRecipient(recipient)),
     created_at: String(doc.frontmatter.created_at),
     status: next,
     ...updates,
@@ -235,7 +244,8 @@ export function recordOutboxCheckAttempt(item: OutboxItem): string {
  * (workflow `invite:add --then-dm` qui partage l'URL profil).
  */
 export function findPendingOutboxItemsByRecipient(recipient: string): OutboxItem[] {
-  return listOutboxItems(["pending"]).filter((it) => it.recipient === recipient);
+  const target = canonicalRecipient(recipient);
+  return listOutboxItems(["pending"]).filter((it) => canonicalRecipient(it.recipient) === target);
 }
 
 export function retryOutboxItem(item: OutboxItem): string {

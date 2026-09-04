@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, renameSync, existsSync, unlinkSync } from "node
 import { join, basename } from "node:path";
 import { slugify, writeMarkdown, readMarkdown } from "../../core/storage.js";
 import { linkedinPaths } from "./storage.js";
+import { canonicalRecipient, decodeProfileSlug } from "./profile-url.js";
 
 /** Nombre maximum de vérifications d'acceptation d'une invitation `sent`. Au-delà, l'invitation passe en `failed`. */
 export const MAX_INVITATION_CHECKS = 10;
@@ -64,7 +65,7 @@ function dirForStatus(status: InvitationStatus): string {
 
 function deriveLabelFromRecipient(recipient: string): string {
   const profile = recipient.match(/\/in\/([^/?#]+)/);
-  if (profile?.[1]) return profile[1];
+  if (profile?.[1]) return decodeProfileSlug(profile[1]);
   return recipient.slice(0, 30);
 }
 
@@ -83,15 +84,18 @@ export function addInvitation(params: {
   ensureDirs();
   const createdAt = new Date().toISOString();
   const id = Math.random().toString(36).slice(2, 10);
-  const recipientLabel = params.label ?? deriveLabelFromRecipient(params.recipient);
-  const filename = filenameFor({ id, recipient: params.recipient, createdAt });
+  // Même canonicalisation que l'outbox: l'URL profil stockée est toujours
+  // percent-encodée, donc navigable et comparable telle quelle.
+  const recipient = canonicalRecipient(params.recipient);
+  const recipientLabel = params.label ?? deriveLabelFromRecipient(recipient);
+  const filename = filenameFor({ id, recipient, createdAt });
   const filepath = join(linkedinPaths.invitationsPendingDir(), filename);
 
   const frontmatter: InvitationFrontmatter = {
     provider: "linkedin",
     kind: "invitation",
     id,
-    recipient: params.recipient,
+    recipient,
     recipient_label: recipientLabel,
     status: "pending",
     created_at: createdAt,
@@ -105,7 +109,7 @@ export function addInvitation(params: {
 
   const inv: Invitation = {
     id,
-    recipient: params.recipient,
+    recipient,
     recipientLabel,
     status: "pending",
     createdAt,
@@ -122,10 +126,13 @@ function parseItem(file: string, status: InvitationStatus): Invitation | null {
   const fm = doc.frontmatter;
   if (fm.kind !== "invitation") return null;
   const note = doc.body.trimEnd();
+  // Canonicalisation à la lecture aussi: les invitations tracées avant cette
+  // règle restent exploitables sans réécriture de fichier.
+  const recipient = canonicalRecipient(String(fm.recipient));
   const item: Invitation = {
     id: String(fm.id),
-    recipient: String(fm.recipient),
-    recipientLabel: String(fm.recipient_label ?? deriveLabelFromRecipient(String(fm.recipient))),
+    recipient,
+    recipientLabel: String(fm.recipient_label ?? deriveLabelFromRecipient(recipient)),
     status,
     createdAt: String(fm.created_at),
     file,
@@ -183,13 +190,14 @@ function moveItem(item: Invitation, next: InvitationStatus, updates: Partial<Inv
   ensureDirs();
   const doc = readMarkdown<InvitationFrontmatter>(item.file);
   if (!doc) throw new Error(`Fichier invitation introuvable: ${item.file}`);
+  const recipient = canonicalRecipient(String(doc.frontmatter.recipient));
   const nextFm: InvitationFrontmatter = {
     ...doc.frontmatter,
     provider: "linkedin",
     kind: "invitation",
     id: String(doc.frontmatter.id),
-    recipient: String(doc.frontmatter.recipient),
-    recipient_label: String(doc.frontmatter.recipient_label ?? deriveLabelFromRecipient(String(doc.frontmatter.recipient))),
+    recipient,
+    recipient_label: String(doc.frontmatter.recipient_label ?? deriveLabelFromRecipient(recipient)),
     created_at: String(doc.frontmatter.created_at),
     status: next,
     ...updates,
@@ -280,8 +288,9 @@ export function recordDirectInvitation(params: {
 
   const createdAt = new Date().toISOString();
   const id = Math.random().toString(36).slice(2, 10);
-  const recipientLabel = params.recipientLabel ?? deriveLabelFromRecipient(params.recipient);
-  const filename = filenameFor({ id, recipient: params.recipient, createdAt });
+  const recipient = canonicalRecipient(params.recipient);
+  const recipientLabel = params.recipientLabel ?? deriveLabelFromRecipient(recipient);
+  const filename = filenameFor({ id, recipient, createdAt });
   const status: InvitationStatus = params.status ?? "sent";
   const filepath = join(dirForStatus(status), filename);
 
@@ -289,7 +298,7 @@ export function recordDirectInvitation(params: {
     provider: "linkedin",
     kind: "invitation",
     id,
-    recipient: params.recipient,
+    recipient,
     recipient_label: recipientLabel,
     recipient_urn: params.recipientUrn,
     status,
@@ -305,7 +314,7 @@ export function recordDirectInvitation(params: {
 
   const inv: Invitation = {
     id,
-    recipient: params.recipient,
+    recipient,
     recipientLabel,
     recipientUrn: params.recipientUrn,
     status,
@@ -336,7 +345,8 @@ export function recordAcceptedInvitation(params: {
   const dir = linkedinPaths.invitationsReceivedDir();
   mkdirSync(dir, { recursive: true });
 
-  const slug = slugify(deriveLabelFromRecipient(params.profileUrl)) || "invitation";
+  const profileUrl = canonicalRecipient(params.profileUrl);
+  const slug = slugify(deriveLabelFromRecipient(profileUrl)) || "invitation";
   const suffix = `-${slug}.md`;
   const existing = readdirSync(dir).find((f) => f.endsWith(suffix));
   if (existing) return { file: join(dir, existing), alreadyKnown: true };
@@ -348,7 +358,7 @@ export function recordAcceptedInvitation(params: {
       provider: "linkedin",
       kind: "received_invitation",
       name: params.name,
-      profile_url: params.profileUrl,
+      profile_url: profileUrl,
       ...(params.invitationUrn ? { invitation_urn: params.invitationUrn } : {}),
       ...(params.headline ? { headline: params.headline } : {}),
       ...(params.mutual ? { mutual: params.mutual } : {}),
