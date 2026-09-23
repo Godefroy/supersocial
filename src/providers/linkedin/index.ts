@@ -58,9 +58,27 @@ export class LinkedInProvider implements SocialProvider {
   /** URL thread actuellement chargée, pour skip `openAndLoadThread` si déjà sur place. */
   private loadedThreadUrl: string | null = null;
 
+  /** Passe à vrai quand le navigateur se ferme en cours de session (fenêtre fermée à la main, crash). */
+  private contextClosed = false;
+
   async ensureContext(opts: { headless?: boolean } = {}): Promise<BrowserContext> {
-    if (!this.context) this.context = await launchPersistentChrome(opts);
+    if (!this.context) {
+      this.context = await launchPersistentChrome(opts);
+      this.context.on("close", () => {
+        this.contextClosed = true;
+      });
+    }
     return this.context;
+  }
+
+  /**
+   * Vrai si le navigateur de la session a été fermé. Toute erreur survenue
+   * ensuite vient de là, pas de LinkedIn: l'appelant la traite comme
+   * transitoire et arrête son batch.
+   */
+  isBrowserClosed(): boolean {
+    if (!this.context) return false;
+    return this.contextClosed || this.context.pages().length === 0;
   }
 
   private async ensurePage(): Promise<Page> {

@@ -41,7 +41,7 @@ Préparer un envoi en masse : `linkedin outbox:add` pour empiler les messages un
 
 Suivre les réponses d'une campagne : `linkedin outbox:replies --match <motif-libellé> --since <date>` liste, pour chaque item envoyé, les messages reçus après lui, d'après les conversations stockées. `--sync` resynchronise d'abord ces conversations, ce qui charge LinkedIn.
 
-Une erreur d'infra transitoire pendant `outbox:send` (réseau coupé/changé, navigation, contexte navigateur fermé, timeout) laisse l'item en `pending` plutôt que de le marquer `failed`, donc il repart tout seul au prochain run, ce qui convient au cron. Seules les vraies erreurs (refus LinkedIn, etc.) atterrissent dans `failed/` et demandent un `outbox:retry`.
+Une erreur d'infra transitoire pendant `outbox:send` (réseau coupé/changé, navigation, contexte navigateur fermé, timeout) laisse l'item en `pending` plutôt que de le marquer `failed`, donc il repart tout seul au prochain run, ce qui convient au cron. Si la fenêtre Chrome est fermée pendant le run, l'item en cours reste en `pending` et le batch s'arrête, pareil pour `invite:send`. Seules les vraies erreurs (refus LinkedIn, etc.) atterrissent dans `failed/` et demandent un `outbox:retry`.
 
 Sécurité contre les doublons : `outbox:send` vérifie le thread cible avant chaque envoi et skip si le dernier message sortant est identique au body de l'item (item passe en `sent/` avec une note `dedup match`, sans consommer de quota DM). Couvre les retries qui suivent un faux négatif où le message avait été envoyé mais marqué `failed`.
 

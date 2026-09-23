@@ -662,6 +662,14 @@ export function registerLinkedInCommands(program: Command): void {
             sent++;
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
+            if (p.isBrowserClosed()) {
+              // Fenêtre fermée à la main ou crash: l'échec vient du navigateur,
+              // pas de LinkedIn, et les items suivants échoueraient pareil.
+              console.error(`  ⚠ navigateur fermé, reste en pending: ${msg}`);
+              console.error(`Navigateur fermé en cours de session. Arrêt du batch, les items restants repartiront au prochain run.`);
+              transient++;
+              break;
+            }
             if (isTransientInfraError(err) && !(err instanceof RateLimitHitError)) {
               // Erreur d'infra transitoire: on laisse l'item en pending pour
               // rejouer au prochain `outbox:send` (pas de markOutboxFailed).
@@ -971,6 +979,11 @@ export function registerLinkedInCommands(program: Command): void {
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
+            if (p.isBrowserClosed()) {
+              console.error(`  ⚠ navigateur fermé, reste en pending: ${msg}`);
+              console.error(`Navigateur fermé en cours de session. Arrêt du batch, les invitations restantes repartiront au prochain run.`);
+              break;
+            }
             markInvitationFailed(inv, msg);
             console.error(`  ✗ échec: ${msg}`);
             failed++;
