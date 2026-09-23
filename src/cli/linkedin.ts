@@ -27,6 +27,7 @@ import {
   markOutboxFailed,
   cancelOutboxItem,
   retryOutboxItem,
+  findOutboxReplies,
   recordOutboxCheckAttempt,
   findPendingOutboxItemsByRecipient,
   isOutboxItemDue,
@@ -55,6 +56,30 @@ import {
 import { getTodayCount, getDailyLimits, ThrottleLimitError, type CountedAction } from "../core/throttle-state.js";
 import { humanPause, RateLimitHitError, LinkedInDmRestrictedError } from "../core/throttle.js";
 import type { SearchOptions } from "../core/provider.js";
+
+/** Synchronise des conversations dans une seule session Chrome, avec une pause `read` entre chaque. */
+async function syncThreads(targets: string[], opts: { rewrite?: boolean } = {}): Promise<void> {
+  let ok = 0;
+  let ko = 0;
+  // Un seul browser pour toute la boucle: évite N lancements de Chrome.
+  await withProvider(async (p) => {
+    for (const [i, target] of targets.entries()) {
+      try {
+        const { conversation, messages } = await p.readConversation(target);
+        const file = writeConversation(conversation, messages, { rewrite: opts.rewrite === true });
+        ok++;
+        console.log(
+          `[${i + 1}/${targets.length}] Thread ${conversation.id} avec ${conversation.participants.map((x) => x.name).join(", ") || "?"}: ${messages.length} message(s). Stocké dans ${file}`,
+        );
+      } catch (err) {
+        ko++;
+        console.error(`[${i + 1}/${targets.length}] ${target}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (i < targets.length - 1) await humanPause("read");
+    }
+  });
+  if (targets.length > 1) console.log(`\n${ok} thread(s) synchronisé(s), ${ko} en échec.`);
+}
 
 async function withProvider<T>(fn: (p: LinkedInProvider) => Promise<T>): Promise<T> {
   const provider = new LinkedInProvider();
@@ -276,7 +301,7 @@ export function registerLinkedInCommands(program: Command): void {
     });
 
   linkedin
-    .command("thread:sync <urls...>")
+    .command("thread:sync [urls...]")
     .description("Synchroniser une ou plusieurs conversations dans une seule session. url = URL profil (/in/slug/), URL thread (/messaging/thread/id/) ou thread ID")
     .option("--rewrite", "réécrire le fichier au lieu de compléter l'historique existant")
     .option("--from-file <path>", "lire les cibles dans un fichier, une par ligne (# pour commenter)")
@@ -293,26 +318,7 @@ export function registerLinkedInCommands(program: Command): void {
         return;
       }
 
-      let ok = 0;
-      let ko = 0;
-      // Un seul browser pour toute la boucle: évite N lancements de Chrome.
-      await withProvider(async (p) => {
-        for (const [i, target] of targets.entries()) {
-          try {
-            const { conversation, messages } = await p.readConversation(target);
-            const file = writeConversation(conversation, messages, { rewrite: opts.rewrite === true });
-            ok++;
-            console.log(
-              `[${i + 1}/${targets.length}] Thread ${conversation.id} avec ${conversation.participants.map((x) => x.name).join(", ") || "?"}: ${messages.length} message(s). Stocké dans ${file}`,
-            );
-          } catch (err) {
-            ko++;
-            console.error(`[${i + 1}/${targets.length}] ${target}: ${err instanceof Error ? err.message : String(err)}`);
-          }
-          if (i < targets.length - 1) await humanPause("read");
-        }
-      });
-      if (targets.length > 1) console.log(`\n${ok} thread(s) synchronisé(s), ${ko} en échec.`);
+      await syncThreads(targets, { rewrite: opts.rewrite === true });
     });
 
   linkedin
@@ -472,6 +478,53 @@ export function registerLinkedInCommands(program: Command): void {
         console.log(`✓ ${it.id} (${it.recipientLabel}) → pending`);
       }
       console.log(`\n${targets.length} item(s) replacé(s) en attente.`);
+    });
+
+  linkedin
+    .command("outbox:replies")
+    .description("Lister les réponses reçues après les messages envoyés depuis la boîte d'envoi, d'après les conversations stockées")
+    .option("--match <motif>", "ne garder que les items dont le libellé correspond (regex, insensible à la casse)")
+    .option("--since <date>", "ne garder que les items envoyés depuis cette date (ex: 2026-08-26)")
+    .option("--sync", "resynchroniser d'abord les conversations concernées (charge LinkedIn)")
+    .action(async (opts: { match?: string; since?: string; sync?: boolean }) => {
+      let items = listOutboxItems(["sent"]);
+      if (opts.match) {
+        const re = new RegExp(opts.match, "i");
+        items = items.filter((it) => re.test(it.recipientLabel));
+      }
+      if (opts.since) {
+        const since = new Date(opts.since);
+        if (Number.isNaN(since.getTime())) {
+          console.error(`Date invalide: ${opts.since}`);
+          process.exit(1);
+        }
+        items = items.filter((it) => it.sentAt && new Date(it.sentAt) >= since);
+      }
+      if (items.length === 0) {
+        console.log("Aucun item envoyé ne correspond.");
+        return;
+      }
+      if (opts.sync) {
+        await syncThreads([...new Set(items.flatMap((it) => (it.threadId ? [it.threadId] : [])))]);
+        console.log("");
+      }
+
+      const results = items.map(findOutboxReplies).sort((a, b) => a.item.recipientLabel.localeCompare(b.item.recipientLabel));
+      const replied = results.filter((r) => r.status === "replied");
+      const silent = results.filter((r) => r.status === "silent");
+      const missing = results.filter((r) => r.status === "no-thread");
+
+      console.log(`Répondu (${replied.length}/${results.length})`);
+      for (const r of replied) {
+        console.log(`\n${r.item.recipientLabel}`);
+        for (const m of r.replies) console.log(`  ${m.sentAt} | ${formatMessagePreview(m.body, 200)}`);
+      }
+      if (silent.length > 0) {
+        console.log(`\nSans réponse (${silent.length}): ${silent.map((r) => r.item.recipientLabel).join(", ")}`);
+      }
+      if (missing.length > 0) {
+        console.log(`\nConversation non stockée (${missing.length}): ${missing.map((r) => r.item.recipientLabel).join(", ")}`);
+      }
     });
 
   linkedin

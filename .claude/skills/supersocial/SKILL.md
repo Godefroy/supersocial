@@ -43,6 +43,7 @@ npm run dev -- linkedin outbox:add <url> <body> [--label <label>] [--after <date
 npm run dev -- linkedin outbox:list [--status pending|sent|failed|all]
 npm run dev -- linkedin outbox:send [-n N] [--dry-run]
 npm run dev -- linkedin outbox:retry [ids...] [--all] [--match <motif>]
+npm run dev -- linkedin outbox:replies [--match <motif>] [--since <date>] [--sync]
 npm run dev -- linkedin outbox:cancel <id>
 
 # Commentaires
@@ -83,6 +84,8 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 `outbox:add` pose un markdown dans `data/linkedin/outbox/pending/`. `outbox:send` traite les items en attente, un par un, avec `humanPause("dm")` entre chaque, et s'arrête sur `RateLimitHitError`. Nombre d'envois plafonné par la capacité journalière restante (`getDailyLimits().dm - getTodayCount("dm")`). Les items envoyés passent dans `sent/`, ceux en erreur dans `failed/`. Pour rejouer des items en échec : `outbox:retry --all` (tout) ou `outbox:retry <id1> <id2>` (sélection), avec `--match <motif>` pour filtrer par regex sur le message d'erreur.
 
 `--after <date>` programme un item (`2026-08-27`, `2026-08-27T10:00`, `+2d`, `+6h`). Il reste en `pending` et `outbox:send` l'ignore jusqu'à sa date, en annonçant combien d'items sont programmés et à quand. Sert à étaler une campagne sur plusieurs jours et à laisser le cron la vider.
+
+`outbox:replies` liste les messages reçus après chaque item envoyé, filtrés par libellé (`--match`, regex) et date d'envoi (`--since`). Sans `--sync`, lecture locale seule, sans charger LinkedIn. Avec `--sync`, les conversations concernées sont d'abord resynchronisées.
 
 Erreurs transitoires : une erreur d'infra (réseau coupé/changé, navigation, contexte navigateur fermé, timeout) laisse l'item en `pending` au lieu de le passer en `failed`, donc il repart automatiquement au prochain `outbox:send` sans `outbox:retry` manuel. Seules les vraies erreurs (refus LinkedIn, etc.) vont en `failed`.
 

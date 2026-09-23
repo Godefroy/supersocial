@@ -10,7 +10,7 @@ import {
   normalizeUrlInput,
   tryCanonicalProfileUrl,
 } from "../profile-url.js";
-import { DEGREE_TOKEN_ALT, degreeFromToken, LABELS } from "../locale.js";
+import { DEGREE_TOKEN_ALT, degreeFromToken, LABELS, resolveDayHeading } from "../locale.js";
 
 const MESSAGING_BASE = "https://www.linkedin.com/messaging/thread/";
 const THREAD_URL_RE = /https?:\/\/(?:www\.)?linkedin\.com\/messaging\/thread\/([^/?#]+)/i;
@@ -657,6 +657,8 @@ interface RawMessage {
   senderSlug: string | null;
   timestampText: string | null;
   datetime: string | null;
+  /** En-tête de jour du fil ("26 juin", "Aujourd’hui"), hérité des messages précédents. */
+  dayLabel: string | null;
   body: string;
 }
 
@@ -786,8 +788,17 @@ export async function extractThreadState(
         };
 
         const out: RawMessage[] = [];
+        let currentDay: string | null = null;
 
         for (const it of items) {
+          // L'en-tête de jour est frère de l'item, dans le même event, et ne
+          // figure qu'avant le premier message de chaque journée.
+          const dayEl = it
+            .closest(".msg-s-message-list__event")
+            ?.querySelector<HTMLElement>("time.msg-s-message-list__time-heading");
+          const dayText = dayEl ? innerText(dayEl).trim() : "";
+          if (dayText) currentDay = dayText;
+
           // Le meta du groupe (expéditeur + heure) vit dans le premier item du
           // groupe, à l'intérieur de l'item lui-même. Les items suivants n'en
           // ont pas et héritent de `currentSender`.
@@ -885,6 +896,7 @@ export async function extractThreadState(
             senderSlug: currentSender.slug,
             timestampText: tsText || currentSender.timestampText,
             datetime: dtAttr,
+            dayLabel: currentDay,
             body,
           });
         }
@@ -970,8 +982,11 @@ export async function extractThreadState(
 
     const senderInfo = senderUrn ? participantByUrn.get(senderUrn) : null;
 
-    const sentAt = m.datetime ?? m.timestampText ?? "";
-    const id = m.eventUrn ?? hashMessageId(threadId, m.senderName, sentAt, m.body, idx);
+    // Le hash de repli garde l'horodatage brut pour rester stable d'un sync à l'autre.
+    const rawTs = m.datetime ?? m.timestampText ?? "";
+    const day = m.datetime ? null : resolveDayHeading(m.dayLabel);
+    const sentAt = day ? `${day} ${m.timestampText ?? ""}`.trim() : rawTs;
+    const id = m.eventUrn ?? hashMessageId(threadId, m.senderName, rawTs, m.body, idx);
     const cleanedUrl = cleanProfileUrl(senderInfo?.profileUrl ?? m.senderProfileUrl);
     const urn =
       senderUrn ?? senderInfo?.profileUrn ?? extractProfileUrn(m.senderProfileUrl);

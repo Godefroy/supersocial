@@ -320,7 +320,8 @@ export function writeConversation(
 ): string {
   const { path, slug } = resolveConversationPath(conv);
 
-  const existing = opts.rewrite ? null : readMarkdown<Record<string, unknown>>(path);
+  const prior = readMarkdown<Record<string, unknown>>(path);
+  const existing = opts.rewrite ? null : prior;
   const seen = new Set<string>();
   if (existing) {
     const m = existing.body.match(/<!-- msg-id:([^ ]+) -->/g) ?? [];
@@ -338,14 +339,25 @@ export function writeConversation(
   const body = (existing?.body ?? "") + (newLines ? (existing?.body ? "\n" : "") + newLines : "");
   const totalCount = (existing?.body.match(/<!-- msg-id:/g)?.length ?? 0) + newMessages.length;
 
+  // Une lecture par URL de thread ne voit pas toujours les participants: on
+  // garde alors ceux déjà connus plutôt que d'écraser avec une liste vide.
+  const participantNames =
+    conv.participants.length > 0
+      ? conv.participants.map((p) => p.name)
+      : ((prior?.frontmatter?.participants as string[] | undefined) ?? []);
+  const participantUrls =
+    conv.participants.length > 0
+      ? conv.participants.map((p) => p.profileUrl ?? null)
+      : ((prior?.frontmatter?.participant_urls as Array<string | null> | undefined) ?? []);
+
   writeMarkdown(path, {
     frontmatter: {
       provider: LINKEDIN,
       kind: "conversation",
       conversation_id: conv.id,
       conversation_url: conv.url,
-      participants: conv.participants.map((p) => p.name),
-      participant_urls: conv.participants.map((p) => p.profileUrl ?? null),
+      participants: participantNames,
+      participant_urls: participantUrls,
       last_synced_at: new Date().toISOString(),
       last_message_at: conv.lastMessageAt ?? null,
       message_count: totalCount,
@@ -360,7 +372,7 @@ export function writeConversation(
     threadId: conv.id,
     slug,
     file: path,
-    participants: conv.participants.map((p) => p.name),
+    participants: participantNames,
     lastSyncedAt: new Date().toISOString(),
     ...(conv.lastMessageAt ? { lastMessageAt: conv.lastMessageAt } : {}),
     messageCount: totalCount,
@@ -378,26 +390,35 @@ export function findConversationFileByThreadId(threadId: string): string | null 
   return index.find((e) => e.threadId === threadId)?.file ?? null;
 }
 
+export interface StoredMessage {
+  id: string;
+  sentAt: string;
+  from: string;
+  outgoing: boolean;
+  body: string;
+}
+
+/** Relit les messages d'un thread depuis son fichier markdown, dans l'ordre du fil. */
+export function readStoredMessages(threadId: string): StoredMessage[] | null {
+  const file = findConversationFileByThreadId(threadId);
+  if (!file) return null;
+  const doc = readMarkdown<Record<string, unknown>>(file);
+  if (!doc) return null;
+  const out: StoredMessage[] = [];
+  for (const m of doc.body.matchAll(/<!-- msg-id:([^ ]+) -->\s*\n##\s+(.*?)\s+—\s+([^\n]+)\n\n([\s\S]*?)(?=\n<!-- msg-id:|\s*$)/g)) {
+    const from = m[3]!.trim();
+    out.push({ id: m[1]!, sentAt: m[2]!.trim(), from, outgoing: from === "Moi", body: m[4]!.trim() });
+  }
+  return out;
+}
+
 /**
  * Retourne le corps du dernier message sortant (envoyé par nous) dans ce thread,
  * en relisant le fichier markdown. Utilisé pour détecter les envois en doublon.
  */
 export function readLastOutgoingBody(threadId: string): string | null {
-  const file = findConversationFileByThreadId(threadId);
-  if (!file) return null;
-  const doc = readMarkdown<Record<string, unknown>>(file);
-  if (!doc) return null;
-  const blocks = doc.body.split(/<!-- msg-id:[^>]*-->/).filter((s) => s.trim().length > 0);
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i]!;
-    // Format: "\n## <sentAt> — <from>\n\n<body>\n"
-    const headerMatch = block.match(/^\s*##\s+[^\n]*—\s*(.+?)\s*\n\s*\n([\s\S]+?)\s*$/);
-    if (!headerMatch) continue;
-    const from = headerMatch[1]!.trim();
-    const body = headerMatch[2]!.trim();
-    if (from === "Moi") return body;
-  }
-  return null;
+  const outgoing = readStoredMessages(threadId)?.filter((m) => m.outgoing) ?? [];
+  return outgoing.at(-1)?.body ?? null;
 }
 
 /**

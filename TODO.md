@@ -71,6 +71,9 @@ Infra :
 - [ ] Sync incrémentale pour les threads (s'arrêter dès que tous les messages chargés sont déjà dans le fichier)
 - [x] `thread:sync` en batch : `thread:sync <urls...>` ou `--from-file <path>`, une seule session Chrome, pause `read` entre chaque thread
 - [x] `thread:sync --rewrite` : repart du fichier vide, seul moyen de corriger un historique déjà stocké puisque les msg-id ne changent pas
+- [x] Messages datés : l'en-tête de jour du fil (« 26 juin », « Aujourd’hui », « lundi ») est résolu en date ISO, l'horodatage devient `2026-08-26 17:01` au lieu de l'heure seule. Les messages déjà stockés gardent l'ancien format.
+- [x] `thread:sync` conserve les participants connus quand la lecture par URL de thread n'en trouve pas
+- [x] `outbox:replies` : réponses reçues après chaque item envoyé, filtrables par libellé et date, avec `--sync` optionnel
 - [x] Déroulé complet de l'historique : plateau porté à 5 tours, scroll qui produit un vrai delta avant de remonter, un scroll sans effet ne coupe plus la boucle
 - [ ] URN profil des commentateurs : actuellement l'URL `/in/slug/` est le seul identifiant disponible depuis la page commentaires. Pour le vrai URN `urn:li:fsd_profile:...`, il faut visiter la page profil.
 - [ ] Extraction de l'URN des posts côté search : souvent absent du DOM React, on retombe sur ID synthétique. Parser le blob `<script id="rehydrate-data">` (format Next.js RSC Flight) serait plus robuste.

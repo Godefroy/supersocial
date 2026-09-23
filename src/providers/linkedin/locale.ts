@@ -161,3 +161,71 @@ export const MATCHES_LABEL_SRC = `(ariaRaw, textRaw, spec) => {
     hit(spec.textIncludes, (v) => text.includes(v))
   );
 }`;
+
+// --- En-têtes de jour de la messagerie ---
+
+const DAY_RELATIVE: Record<string, number> = {
+  "aujourd'hui": 0, today: 0, heute: 0,
+  hier: 1, yesterday: 1, gestern: 1,
+};
+
+// getDay(): 0 = dimanche.
+const WEEKDAYS: Record<string, number> = {
+  dimanche: 0, lundi: 1, mardi: 2, mercredi: 3, jeudi: 4, vendredi: 5, samedi: 6,
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+  sonntag: 0, montag: 1, dienstag: 2, mittwoch: 3, donnerstag: 4, freitag: 5, samstag: 6,
+};
+
+// Préfixes de mois FR + EN + DE, sans accents. "juin/jun" et "juil/jul" se
+// départagent sur leurs premières lettres, testées dans cet ordre.
+const MONTH_PREFIXES: Array<[string, number]> = [
+  ["janv", 1], ["jan", 1], ["fev", 2], ["feb", 2], ["mar", 3], ["avr", 4], ["apr", 4],
+  ["mai", 5], ["may", 5], ["juin", 6], ["jun", 6], ["juil", 7], ["jul", 7],
+  ["aou", 8], ["aug", 8], ["sep", 9], ["oct", 10], ["okt", 10], ["nov", 11],
+  ["dec", 12], ["dez", 12],
+];
+
+function monthFromToken(token: string): number | undefined {
+  return MONTH_PREFIXES.find(([p]) => token.startsWith(p))?.[1];
+}
+
+const isoDay = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/**
+ * Convertit l'en-tête de jour d'un fil de messagerie ("Aujourd’hui", "Hier",
+ * "lundi", "26 juin", "24 avr. 2025", "Jun 26", "Apr 24, 2025", "26. Juni")
+ * en date ISO `YYYY-MM-DD`, relativement à `now`. Retourne `null` si le
+ * libellé n'est pas reconnu.
+ */
+export function resolveDayHeading(label: string | null | undefined, now: Date = new Date()): string | null {
+  if (!label) return null;
+  const t = label
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[’`]/g, "'")
+    .toLowerCase()
+    .trim();
+
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (t in DAY_RELATIVE) {
+    day.setDate(day.getDate() - DAY_RELATIVE[t]!);
+    return isoDay(day);
+  }
+  if (t in WEEKDAYS) {
+    const back = (day.getDay() - WEEKDAYS[t]! + 7) % 7 || 7;
+    day.setDate(day.getDate() - back);
+    return isoDay(day);
+  }
+
+  const dayNum = t.match(/\b(\d{1,2})\b/)?.[1];
+  const year = t.match(/\b(\d{4})\b/)?.[1];
+  const monthToken = t.match(/\p{L}+/u)?.[0];
+  const month = monthToken ? monthFromToken(monthToken) : undefined;
+  if (!dayNum || !month) return null;
+
+  const d = new Date(year ? Number(year) : now.getFullYear(), month - 1, Number(dayNum));
+  // Sans année, LinkedIn désigne une date passée de l'année en cours.
+  if (!year && d > now) d.setFullYear(d.getFullYear() - 1);
+  return isoDay(d);
+}

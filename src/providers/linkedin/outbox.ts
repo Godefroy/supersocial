@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync, renameSync, existsSync, unlinkSync } from "node:fs";
 import { join, basename } from "node:path";
 import { slugify, writeMarkdown, readMarkdown } from "../../core/storage.js";
-import { linkedinPaths } from "./storage.js";
+import { linkedinPaths, readStoredMessages, type StoredMessage } from "./storage.js";
 import { canonicalRecipient, decodeProfileSlug } from "./profile-url.js";
 
 /** Nombre maximum de pre-flights où la cible n'est pas en 1ère relation. Au-delà, l'item passe en `failed`. */
@@ -268,4 +268,33 @@ export function cancelOutboxItem(id: string): OutboxItem | null {
   }
   unlinkSync(item.file);
   return item;
+}
+
+export interface OutboxReplies {
+  item: OutboxItem;
+  /** `no-thread` quand la conversation n'est pas stockée localement. */
+  status: "replied" | "silent" | "no-thread";
+  replies: StoredMessage[];
+}
+
+const normalizeBody = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+/**
+ * Messages entrants reçus après l'envoi d'un item, lus dans la conversation
+ * stockée. L'envoi est repéré par son corps, à défaut par le dernier sortant.
+ */
+export function findOutboxReplies(item: OutboxItem): OutboxReplies {
+  const messages = item.threadId ? readStoredMessages(item.threadId) : null;
+  if (!messages) return { item, status: "no-thread", replies: [] };
+  const body = normalizeBody(item.body);
+  let anchor = -1;
+  let lastOutgoing = -1;
+  messages.forEach((m, i) => {
+    if (!m.outgoing) return;
+    lastOutgoing = i;
+    if (normalizeBody(m.body) === body) anchor = i;
+  });
+  if (anchor < 0) anchor = lastOutgoing;
+  const replies = messages.slice(anchor + 1).filter((m) => !m.outgoing);
+  return { item, status: replies.length > 0 ? "replied" : "silent", replies };
 }
