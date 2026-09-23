@@ -451,12 +451,20 @@ export async function sendInvite(
       for (const el of elements) {
         if ((el as HTMLButtonElement).disabled) continue;
         if (matchesLabel(el.getAttribute("aria-label") ?? "", el.innerText ?? "", ctx.labels.connect)) {
-          el.click();
+          // Marqué pour un clic Playwright: "Se connecter" est désormais un
+          // lien vers /preload/custom-invite/ que LinkedIn ne suit pas (ou
+          // tardivement) sur un `el.click()` synthétique.
+          el.setAttribute("data-supersocial-connect", "1");
           return true;
         }
       }
       return false;
     }, inviteCtx)
+    .then(async (found) => {
+      if (!found) return false;
+      await page.locator("[data-supersocial-connect='1']").first().click({ timeout: 5_000 });
+      return true;
+    })
     .catch(() => false);
 
   if (!directClicked) {
@@ -523,9 +531,14 @@ export async function sendInvite(
   // textarea) vit dans le shadow root et n'est pas visible via
   // `document.querySelector(...)`. Toutes les évaluations doivent piercer le
   // shadow root.
-  const inviteUiReady = await page
-    .waitForFunction(
-      (ctx) => {
+  // Sondage plutôt qu'un `waitForFunction` unique: le clic sur le lien
+  // /preload/custom-invite/ change de route, ce qui détruit le contexte
+  // d'exécution et ferait échouer l'attente d'un coup.
+  let inviteUiReady = false;
+  const readyDeadline = Date.now() + 20_000;
+  while (!inviteUiReady && Date.now() < readyDeadline) {
+    inviteUiReady = await page
+      .evaluate((ctx) => {
         const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
           (aria: string, text: string, spec: unknown) => boolean;
         const outlet = document.getElementById("interop-outlet");
@@ -538,15 +551,13 @@ export async function sendInvite(
           const text = el.innerText ?? "";
           return matchesLabel(aria, text, ctx.labels.sendCore) || matchesLabel(aria, text, ctx.labels.addNote);
         });
-      },
-      inviteCtx,
-      { timeout: 10_000 },
-    )
-    .then(() => true)
-    .catch(() => false);
+      }, inviteCtx)
+      .catch(() => false);
+    if (!inviteUiReady) await sleep(500);
+  }
   if (!inviteUiReady) {
     await dumpPageState(page, "linkedin-invite-modal-not-opened", { url: targetUrl, viaMoreMenu, currentUrl: page.url() });
-    return { status: "blocked", reason: "Modale d'invitation (shadow root #interop-outlet) absente 10s après le clic." };
+    return { status: "blocked", reason: "Modale d'invitation (shadow root #interop-outlet) absente 20s après le clic." };
   }
   if (debug) console.error(`[invite] shadow root invite UI ready`);
   await sleep(500);
@@ -645,9 +656,11 @@ export async function sendInvite(
   }
 
   // Confirmer: le shadow root se vide (plus de textarea/boutons d'envoi).
-  const sentConfirmed = await page
-    .waitForFunction(
-      (ctx) => {
+  let sentConfirmed = false;
+  const sentDeadline = Date.now() + 10_000;
+  while (!sentConfirmed && Date.now() < sentDeadline) {
+    sentConfirmed = await page
+      .evaluate((ctx) => {
         const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
           (aria: string, text: string, spec: unknown) => boolean;
         const root = document.getElementById("interop-outlet")?.shadowRoot;
@@ -659,12 +672,10 @@ export async function sendInvite(
           const text = el.innerText ?? "";
           return matchesLabel(aria, text, ctx.labels.sendCore) || matchesLabel(aria, text, ctx.labels.addNote);
         });
-      },
-      inviteCtx,
-      { timeout: 10_000 },
-    )
-    .then(() => true)
-    .catch(() => false);
+      }, inviteCtx)
+      .catch(() => false);
+    if (!sentConfirmed) await sleep(500);
+  }
 
   if (!sentConfirmed) {
     await dumpPageState(page, "linkedin-invite-not-confirmed", { url: targetUrl, currentUrl: page.url() });

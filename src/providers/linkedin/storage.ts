@@ -20,8 +20,9 @@ export const linkedinPaths = {
   searches: () => join(base(), "searches"),
   searchFile: (query: string, date: string) =>
     join(base(), "searches", `${slugify(query)}-${date}.md`),
-  peopleSearchFile: (query: string, date: string) =>
-    join(base(), "searches", "people", `${slugify(query)}-${date}.md`),
+  // Le réseau suffixe le nom hors 1er degré, pour qu'une même requête en 2e degré n'écrase pas celle en 1er.
+  peopleSearchFile: (query: string, date: string, network = "1st") =>
+    join(base(), "searches", "people", `${slugify(query)}${network === "1st" ? "" : `-${network}`}-${date}.md`),
 
   myPostsDir: () => join(base(), "posts", "mine"),
   myPostFile: (postId: string, date: string) =>
@@ -82,9 +83,9 @@ export function writeSearchResults(query: string, posts: Post[]): string {
   return path;
 }
 
-export function writePeopleSearchResults(query: string, people: PersonResult[]): string {
+export function writePeopleSearchResults(query: string, people: PersonResult[], network = "1st"): string {
   const date = isoDate();
-  const path = linkedinPaths.peopleSearchFile(query, date);
+  const path = linkedinPaths.peopleSearchFile(query, date, network);
   const esc = (s: string): string => s.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
 
   const rows = people
@@ -103,6 +104,7 @@ export function writePeopleSearchResults(query: string, people: PersonResult[]):
       provider: LINKEDIN,
       kind: "people-search",
       query,
+      network,
       fetched_at: new Date().toISOString(),
       result_count: people.length,
     },

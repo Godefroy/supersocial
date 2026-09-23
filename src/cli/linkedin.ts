@@ -238,7 +238,7 @@ export function registerLinkedInCommands(program: Command): void {
     .action(async (query: string, opts: { limit: number; network: string }) => {
       const network = opts.network === "2nd" ? "2nd" : opts.network === "any" ? "any" : "1st";
       const people = await withProvider((p) => p.searchPeople(query, { limit: opts.limit, network }));
-      const file = writePeopleSearchResults(query, people);
+      const file = writePeopleSearchResults(query, people, network);
       console.log(`${people.length} personne(s) trouvée(s). Stocké dans ${file}`);
     });
 
