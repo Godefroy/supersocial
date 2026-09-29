@@ -24,6 +24,10 @@
 # que la cible n'est pas 1ere relation, fire automatiquement quand ca matche).
 0 9 * * 1-5 __REPO__/scripts/cron.sh linkedin invite:check
 
+# Reponses: 1 fois par jour, resynchronise les fils des DM envoyes depuis
+# 14 jours pour que `outbox:replies` (lecture locale) reste a jour.
+45 9 * * 1-5 __REPO__/scripts/cron.sh linkedin outbox:replies --sync --since 14d
+
 # Demandes de connexion recues: 1 fois par jour, accepte tout (avec ou sans
 # note). Cree de nouvelles 1eres relations, donc a placer avant le creneau
 # outbox:send de l'apres-midi qui peut alors debloquer des DM en attente.

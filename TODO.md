@@ -54,6 +54,7 @@ Infra :
 - [x] Cron entries pour `invite:send` (2x/jour) et `invite:check` (1x/jour)
 - [x] `linkedin invite:accept` : accepte toutes les demandes de connexion reçues depuis `/mynetwork/invitation-manager/` (déterministe, avec ou sans note), limite journalière `invite_accept` (30), cron 1x/jour. Cartes ciblées par `[role="listitem"]` + `componentkey` (URN d'invitation), clic Playwright réel, historique dans `data/linkedin/invitations/received/`
 - [x] Expiration des invitations non acceptées : `invite:check` plafonne à 10 vérifications max (1x/20h), au-delà passe en `failed` et cascade les DM `pending` adressés à la même URL en `failed`. `outbox:send` applique le même compteur côté pre-flight degré (10 essais waiting max). Constantes en haut de `invitations.ts` et `outbox.ts`.
+- [x] Cron quotidien `outbox:replies --sync --since 14d` : resynchronise les fils des DM envoyés depuis 14 jours
 - [ ] `linkedin comment <postId> <body>` : poster un commentaire
 - [ ] `linkedin publish <body>` : publier un post
 

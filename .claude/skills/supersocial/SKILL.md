@@ -85,7 +85,7 @@ Pour une URL profil, la résolution navigue vers `/messaging/compose/?recipient=
 
 `--after <date>` programme un item (`2026-08-27`, `2026-08-27T10:00`, `+2d`, `+6h`). Il reste en `pending` et `outbox:send` l'ignore jusqu'à sa date, en annonçant combien d'items sont programmés et à quand. Sert à étaler une campagne sur plusieurs jours et à laisser le cron la vider.
 
-`outbox:replies` liste les messages reçus après chaque item envoyé, filtrés par libellé (`--match`, regex) et date d'envoi (`--since`). Sans `--sync`, lecture locale seule, sans charger LinkedIn. Avec `--sync`, les conversations concernées sont d'abord resynchronisées.
+`outbox:replies` liste les messages reçus après chaque item envoyé, filtrés par libellé (`--match`, regex) et date d'envoi (`--since`, date ou `14d`). Sans `--sync`, lecture locale seule, sans charger LinkedIn. Avec `--sync`, les conversations concernées sont d'abord resynchronisées.
 
 Erreurs transitoires : une erreur d'infra (réseau coupé/changé, navigation, contexte navigateur fermé, timeout) laisse l'item en `pending` au lieu de le passer en `failed`, donc il repart automatiquement au prochain `outbox:send` sans `outbox:retry` manuel. Seules les vraies erreurs (refus LinkedIn, etc.) vont en `failed`.
 

@@ -371,8 +371,9 @@ export async function readProfileStatus(page: Page, url: string): Promise<Profil
  * variantes sans option note).
  *
  * Suppose que le caller a déjà vérifié le degré (pas 1ère relation) et la
- * non-existence d'invitation pendante via `readProfileStatus`. Si appelé sur
- * une 1ère relation, retourne `already-connected`.
+ * non-existence d'invitation pendante via `readProfileStatus`. Le bouton
+ * Message ne prouve pas la 1ère relation (le nouveau profil l'affiche aussi
+ * en 2e), donc seul le degré lu par `readProfileStatus` fait foi.
  */
 export async function sendInvite(
   page: Page,
@@ -411,25 +412,20 @@ export async function sendInvite(
         (aria: string, text: string, spec: unknown) => boolean;
       const L = ctx.labels;
       const topcard = findTopcard();
-      if (!topcard) return { pending: false, connected: false, topcardFound: false };
+      if (!topcard) return { pending: false, topcardFound: false };
       const buttons = Array.from(topcard.querySelectorAll<HTMLElement>("button, a"));
-      const label = (spec: unknown): boolean =>
-        buttons.some((b) => matchesLabel(b.getAttribute("aria-label") ?? "", b.innerText ?? "", spec));
-      // "connected" = bouton Message présent sans bouton connexion.
-      return {
-        pending: label(L.pending),
-        connected: label(L.message) && !label(L.connect),
-        topcardFound: true,
-      };
+      const pending = buttons.some((b) =>
+        matchesLabel(b.getAttribute("aria-label") ?? "", b.innerText ?? "", L.pending),
+      );
+      return { pending, topcardFound: true };
     }, inviteCtx)
-    .catch(() => ({ pending: false, connected: false, topcardFound: false }));
+    .catch(() => ({ pending: false, topcardFound: false }));
 
   if (!preCheck.topcardFound) {
     await dumpPageState(page, "linkedin-invite-topcard-not-found", { url: targetUrl });
     return { status: "no-button", reason: "Top card du profil introuvable (componentkey 'com.linkedin.sdui.profile.card.ref...Topcard'). Layout LinkedIn possiblement changé." };
   }
   if (preCheck.pending) return { status: "already-pending" };
-  if (preCheck.connected) return { status: "already-connected" };
 
   const debug = process.env.SUPERSOCIAL_DEBUG === "true";
   let viaMoreMenu = false;
@@ -655,14 +651,24 @@ export async function sendInvite(
     return { status: "blocked", reason: "Bouton 'Envoyer' introuvable ou inactif dans le shadow root d'invitation." };
   }
 
-  // Confirmer: le shadow root se vide (plus de textarea/boutons d'envoi).
+  // Confirmer: le Topcard passe à "En attente", ou le shadow root se vide
+  // (plus de textarea/boutons d'envoi). Sur le nouveau profil, le shadow root
+  // garde ses boutons alors que l'invitation est partie, d'où le Topcard.
   let sentConfirmed = false;
   const sentDeadline = Date.now() + 10_000;
   while (!sentConfirmed && Date.now() < sentDeadline) {
     sentConfirmed = await page
       .evaluate((ctx) => {
+        const findTopcard = new Function("return (" + ctx.findTopcardSrc + ")()") as () => HTMLElement | null;
         const matchesLabel = new Function("return (" + ctx.matchesSrc + ")")() as
           (aria: string, text: string, spec: unknown) => boolean;
+        const topcard = findTopcard();
+        if (topcard) {
+          const buttons = Array.from(topcard.querySelectorAll<HTMLElement>("button, a"));
+          if (buttons.some((b) => matchesLabel(b.getAttribute("aria-label") ?? "", b.innerText ?? "", ctx.labels.pending))) {
+            return true;
+          }
+        }
         const root = document.getElementById("interop-outlet")?.shadowRoot;
         if (!root) return true;
         const els = Array.from(root.querySelectorAll<HTMLElement>("button, a, [role='button']"));

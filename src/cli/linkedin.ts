@@ -484,7 +484,7 @@ export function registerLinkedInCommands(program: Command): void {
     .command("outbox:replies")
     .description("Lister les réponses reçues après les messages envoyés depuis la boîte d'envoi, d'après les conversations stockées")
     .option("--match <motif>", "ne garder que les items dont le libellé correspond (regex, insensible à la casse)")
-    .option("--since <date>", "ne garder que les items envoyés depuis cette date (ex: 2026-08-26)")
+    .option("--since <date>", "ne garder que les items envoyés depuis cette date (ex: 2026-08-26, ou 14d pour les 14 derniers jours)")
     .option("--sync", "resynchroniser d'abord les conversations concernées (charge LinkedIn)")
     .action(async (opts: { match?: string; since?: string; sync?: boolean }) => {
       let items = listOutboxItems(["sent"]);
@@ -493,7 +493,10 @@ export function registerLinkedInCommands(program: Command): void {
         items = items.filter((it) => re.test(it.recipientLabel));
       }
       if (opts.since) {
-        const since = new Date(opts.since);
+        const relative = opts.since.match(/^(\d+)d$/i);
+        const since = relative
+          ? new Date(Date.now() - parseInt(relative[1]!, 10) * 24 * 3600 * 1000)
+          : new Date(opts.since);
         if (Number.isNaN(since.getTime())) {
           console.error(`Date invalide: ${opts.since}`);
           process.exit(1);
