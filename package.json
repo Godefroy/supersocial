@@ -15,7 +15,7 @@
     "playwright:install": "playwright install chrome"
   },
   "dependencies": {
-    "commander": "^12.1.0",
+    "commander": "^15.0.0",
     "dotenv": "^17.4.2",
     "gray-matter": "^4.0.3",
     "playwright": "^1.49.0",
